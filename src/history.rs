@@ -49,7 +49,7 @@ impl HistoryEntry {
 /// History manager
 pub struct History {
     entries: VecDeque<HistoryEntry>,
-    file_path: PathBuf,
+    file_path: Option<PathBuf>,  // None = memory-only mode
     max_entries: usize,
 }
 
@@ -65,12 +65,21 @@ impl History {
 
         let mut history = Self {
             entries: VecDeque::with_capacity(max_entries),
-            file_path,
+            file_path: Some(file_path),
             max_entries,
         };
 
         history.load()?;
         Ok(history)
+    }
+
+    /// Create a memory-only history (no file persistence)
+    pub fn new_memory_only(max_entries: usize) -> Self {
+        Self {
+            entries: VecDeque::with_capacity(max_entries),
+            file_path: None,
+            max_entries,
+        }
     }
 
     fn expand_path(path: &str) -> PathBuf {
@@ -84,12 +93,17 @@ impl History {
 
     /// Load history from file
     fn load(&mut self) -> Result<()> {
-        if !self.file_path.exists() {
+        let file_path = match &self.file_path {
+            Some(path) => path,
+            None => return Ok(()), // Memory-only mode, skip loading
+        };
+
+        if !file_path.exists() {
             return Ok(());
         }
 
-        let file = File::open(&self.file_path)
-            .with_context(|| format!("Failed to open history file: {:?}", self.file_path))?;
+        let file = File::open(file_path)
+            .with_context(|| format!("Failed to open history file: {:?}", file_path))?;
         let reader = BufReader::new(file);
 
         for line in reader.lines() {
@@ -108,22 +122,33 @@ impl History {
 
     /// Add a new entry to history
     pub fn add(&mut self, entry: HistoryEntry) -> Result<()> {
-        // Append to file
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.file_path)
-            .with_context(|| format!("Failed to open history file for writing: {:?}", self.file_path))?;
+        // Append to file (if not memory-only mode)
+        if let Some(file_path) = &self.file_path {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file_path)
+                .with_context(|| format!("Failed to open history file for writing: {:?}", file_path))?;
 
-        let json = serde_json::to_string(&entry)
-            .with_context(|| "Failed to serialize history entry")?;
-        writeln!(file, "{}", json)
-            .with_context(|| "Failed to write history entry")?;
+            let json = serde_json::to_string(&entry)
+                .with_context(|| "Failed to serialize history entry")?;
+            writeln!(file, "{}", json)
+                .with_context(|| "Failed to write history entry")?;
+        }
 
         // Add to memory
+        let needs_compaction = self.entries.len() >= self.max_entries;
         self.entries.push_back(entry);
         if self.entries.len() > self.max_entries {
             self.entries.pop_front();
+        }
+
+        // Compact file when we reach max entries to prevent unbounded growth
+        if needs_compaction && self.file_path.is_some() {
+            // Only compact every 100 entries beyond max to avoid excessive I/O
+            if self.entries.len() % 100 == 0 {
+                self.compact()?;
+            }
         }
 
         Ok(())
@@ -167,11 +192,14 @@ impl History {
         self.entries.back()
     }
 
-    /// Update the exit code of the last entry
-    pub fn update_last_exit_code(&mut self, code: i32) {
+    /// Update the exit code of the last entry (both in memory and on disk)
+    pub fn update_last_exit_code(&mut self, code: i32) -> Result<()> {
         if let Some(entry) = self.entries.back_mut() {
             entry.exit_code = Some(code);
+            // Rewrite the entire history file to persist the update
+            self.compact()?;
         }
+        Ok(())
     }
 
     /// Get total entry count
@@ -187,16 +215,23 @@ impl History {
     /// Clear history
     pub fn clear(&mut self) -> Result<()> {
         self.entries.clear();
-        if self.file_path.exists() {
-            fs::remove_file(&self.file_path)
-                .with_context(|| format!("Failed to remove history file: {:?}", self.file_path))?;
+        if let Some(file_path) = &self.file_path {
+            if file_path.exists() {
+                fs::remove_file(file_path)
+                    .with_context(|| format!("Failed to remove history file: {:?}", file_path))?;
+            }
         }
         Ok(())
     }
 
-    /// Compact history file (remove old entries)
+    /// Compact history file (remove old entries and rewrite)
     pub fn compact(&mut self) -> Result<()> {
-        let temp_path = self.file_path.with_extension("tmp");
+        let file_path = match &self.file_path {
+            Some(path) => path,
+            None => return Ok(()), // Memory-only mode, nothing to compact
+        };
+
+        let temp_path = file_path.with_extension("tmp");
 
         {
             let mut file = File::create(&temp_path)
@@ -208,7 +243,7 @@ impl History {
             }
         }
 
-        fs::rename(&temp_path, &self.file_path)
+        fs::rename(&temp_path, file_path)
             .with_context(|| "Failed to rename temp history file")?;
 
         Ok(())

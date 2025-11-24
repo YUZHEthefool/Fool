@@ -261,9 +261,11 @@ impl Parser {
                 ParserState::RedirectOut | ParserState::RedirectAppend => {
                     current_command.stdout_redirect = Some(current_token);
                     current_command.stdout_append = state == ParserState::RedirectAppend;
+                    state = ParserState::Argument; // Update state to show we processed the redirect
                 }
                 ParserState::RedirectIn => {
                     current_command.stdin_redirect = Some(current_token);
+                    state = ParserState::Argument; // Update state to show we processed the redirect
                 }
                 _ => {
                     self.add_token(&mut current_command, &current_token, &state);
@@ -279,6 +281,20 @@ impl Parser {
         // Check for unclosed quotes
         if state == ParserState::SingleQuote || state == ParserState::DoubleQuote {
             return ParseResult::Error("Unclosed quote".to_string());
+        }
+
+        // Validate final state: check for incomplete pipelines or redirections
+        match state {
+            ParserState::Pipe => {
+                return ParseResult::Error("Syntax error: pipe without following command".to_string());
+            }
+            ParserState::RedirectOut | ParserState::RedirectAppend => {
+                return ParseResult::Error("Syntax error: output redirection without file".to_string());
+            }
+            ParserState::RedirectIn => {
+                return ParseResult::Error("Syntax error: input redirection without file".to_string());
+            }
+            _ => {}
         }
 
         if commands.is_empty() {
@@ -341,14 +357,16 @@ mod tests {
     #[test]
     fn test_redirect() {
         let parser = Parser::new("!".to_string());
-        match parser.parse("echo hello > output.txt") {
+        let result = parser.parse("echo hello > output.txt");
+        match result {
             ParseResult::Commands(cmds) => {
                 assert_eq!(cmds.len(), 1);
                 assert_eq!(cmds[0].program, "echo");
                 assert_eq!(cmds[0].stdout_redirect, Some("output.txt".to_string()));
                 assert!(!cmds[0].stdout_append);
             }
-            _ => panic!("Expected Commands"),
+            ParseResult::Error(e) => panic!("Parse error: {}", e),
+            _ => panic!("Expected Commands, got: {:?}", result),
         }
     }
 
@@ -370,6 +388,52 @@ mod tests {
         match parser.parse("   ") {
             ParseResult::Empty => {}
             _ => panic!("Expected Empty"),
+        }
+    }
+
+    #[test]
+    fn test_incomplete_pipe() {
+        let parser = Parser::new("!".to_string());
+        match parser.parse("ls |") {
+            ParseResult::Error(e) => {
+                assert!(e.contains("pipe"));
+            }
+            _ => panic!("Expected Error for incomplete pipe"),
+        }
+    }
+
+    #[test]
+    fn test_incomplete_redirect_out() {
+        let parser = Parser::new("!".to_string());
+        match parser.parse("echo test >") {
+            ParseResult::Error(e) => {
+                assert!(e.contains("redirection"));
+            }
+            _ => panic!("Expected Error for incomplete redirect"),
+        }
+    }
+
+    #[test]
+    fn test_incomplete_redirect_in() {
+        let parser = Parser::new("!".to_string());
+        match parser.parse("cat <") {
+            ParseResult::Error(e) => {
+                assert!(e.contains("redirection"));
+            }
+            _ => panic!("Expected Error for incomplete redirect"),
+        }
+    }
+
+    #[test]
+    fn test_append_redirect() {
+        let parser = Parser::new("!".to_string());
+        match parser.parse("echo test >> file.txt") {
+            ParseResult::Commands(cmds) => {
+                assert_eq!(cmds.len(), 1);
+                assert_eq!(cmds[0].stdout_redirect, Some("file.txt".to_string()));
+                assert!(cmds[0].stdout_append);
+            }
+            _ => panic!("Expected Commands"),
         }
     }
 }

@@ -62,10 +62,8 @@ fn init_config() -> Result<()> {
 async fn execute_command(cmd: &str, config: Config) -> Result<i32> {
     let parser = parser::Parser::new(config.ai.trigger_prefix.clone());
     let mut executor = executor::Executor::new();
-    let history = history::History::new(
-        config.history.file_path.clone(),
-        config.history.max_entries,
-    )?;
+    // Use memory-only history for -c mode (no file I/O required)
+    let history = history::History::new_memory_only(config.history.max_entries);
     let ai_agent = ai::AiAgent::new(config.ai.clone());
 
     let result = parser.parse(cmd);

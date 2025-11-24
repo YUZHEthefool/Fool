@@ -345,11 +345,11 @@ impl Repl {
                             // Execute commands
                             match self.executor.execute_pipeline(commands) {
                                 Ok(exec_result) => {
-                                    self.history.update_last_exit_code(exec_result.exit_code);
+                                    let _ = self.history.update_last_exit_code(exec_result.exit_code);
                                 }
                                 Err(e) => {
                                     eprintln!("{}: {}", "Error".with(Color::Red).bold(), e);
-                                    self.history.update_last_exit_code(1);
+                                    let _ = self.history.update_last_exit_code(1);
                                 }
                             }
                         }
@@ -374,11 +374,11 @@ impl Repl {
 
                             match self.ai_agent.query_stream(&query, &self.history).await {
                                 Ok(_response) => {
-                                    self.history.update_last_exit_code(0);
+                                    let _ = self.history.update_last_exit_code(0);
                                 }
                                 Err(e) => {
                                     eprintln!("{}: {}", "AI Error".with(Color::Red).bold(), e);
-                                    self.history.update_last_exit_code(1);
+                                    let _ = self.history.update_last_exit_code(1);
                                 }
                             }
                         }

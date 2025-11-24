@@ -143,9 +143,10 @@ impl AiAgent {
         execute!(stdout(), cursor::MoveToColumn(0))?;
         print!("                    \r");
 
-        // Process streaming response
+        // Process streaming response with proper SSE buffering
         let mut full_response = String::new();
         let mut stream = response.bytes_stream();
+        let mut buffer = String::new(); // Buffer for partial SSE frames
 
         // Print AI response header
         execute!(
@@ -159,23 +160,42 @@ impl AiAgent {
             let chunk = chunk.with_context(|| "Failed to read response chunk")?;
             let text = String::from_utf8_lossy(&chunk);
 
-            // Process SSE data
-            for line in text.lines() {
+            // Append to buffer to handle chunks that span HTTP boundaries
+            buffer.push_str(&text);
+
+            // Process complete SSE events (separated by double newlines)
+            let mut split_pos = 0;
+            for line in buffer.lines() {
+                if line.is_empty() {
+                    continue; // Skip empty lines between events
+                }
+
                 if let Some(data) = line.strip_prefix("data: ") {
                     if data == "[DONE]" {
+                        // Clear buffer and exit
+                        buffer.clear();
                         break;
                     }
 
-                    if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
-                        for choice in chunk.choices {
+                    if let Ok(sse_chunk) = serde_json::from_str::<StreamChunk>(data) {
+                        for choice in sse_chunk.choices {
                             if let Some(content) = choice.delta.content {
                                 print!("{}", content);
                                 stdout().flush()?;
                                 full_response.push_str(&content);
                             }
                         }
+                        // Mark this line as processed
+                        split_pos = buffer.find(line).unwrap_or(0) + line.len() + 1;
                     }
                 }
+            }
+
+            // Remove processed data from buffer, keep incomplete frames
+            if split_pos > 0 && split_pos < buffer.len() {
+                buffer = buffer[split_pos..].to_string();
+            } else if split_pos >= buffer.len() {
+                buffer.clear();
             }
         }
 
