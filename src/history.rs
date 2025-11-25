@@ -51,6 +51,7 @@ pub struct History {
     entries: VecDeque<HistoryEntry>,
     file_path: Option<PathBuf>,  // None = memory-only mode
     max_entries: usize,
+    entries_since_compact: usize,  // Track entries added since last compaction
 }
 
 impl History {
@@ -67,6 +68,7 @@ impl History {
             entries: VecDeque::with_capacity(max_entries),
             file_path: Some(file_path),
             max_entries,
+            entries_since_compact: 0,
         };
 
         history.load()?;
@@ -79,6 +81,7 @@ impl History {
             entries: VecDeque::with_capacity(max_entries),
             file_path: None,
             max_entries,
+            entries_since_compact: 0,
         }
     }
 
@@ -137,18 +140,19 @@ impl History {
         }
 
         // Add to memory
-        let needs_compaction = self.entries.len() >= self.max_entries;
         self.entries.push_back(entry);
         if self.entries.len() > self.max_entries {
             self.entries.pop_front();
         }
 
-        // Compact file when we reach max entries to prevent unbounded growth
-        if needs_compaction && self.file_path.is_some() {
-            // Only compact every 100 entries beyond max to avoid excessive I/O
-            if self.entries.len() % 100 == 0 {
-                self.compact()?;
-            }
+        // Track entries added since last compaction
+        self.entries_since_compact += 1;
+
+        // Compact file periodically to prevent unbounded growth
+        // Trigger compaction every max_entries additions to keep file size reasonable
+        if self.file_path.is_some() && self.entries_since_compact >= self.max_entries {
+            self.compact()?;
+            self.entries_since_compact = 0;
         }
 
         Ok(())

@@ -342,6 +342,9 @@ impl Repl {
                             let entry = HistoryEntry::new(line.to_string());
                             let _ = self.history.add(entry);
 
+                            // Sync history to executor so history command works in pipelines
+                            self.executor.set_history(self.history.get_all_commands().iter().map(|s| s.to_string()).collect());
+
                             // Execute commands
                             match self.executor.execute_pipeline(commands) {
                                 Ok(exec_result) => {
@@ -406,6 +409,18 @@ impl Repl {
         }
 
         Ok(())
+    }
+
+    fn print_history(&self) {
+        let entries = self.history.get_all_commands();
+        if entries.is_empty() {
+            println!("No history available");
+            return;
+        }
+
+        for (i, cmd) in entries.iter().enumerate() {
+            println!("{:5}  {}", i + 1, cmd);
+        }
     }
 
     fn print_welcome(&self) {

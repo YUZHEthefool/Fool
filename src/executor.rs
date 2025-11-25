@@ -72,8 +72,9 @@ impl BuiltinCommand {
 /// Command executor
 pub struct Executor {
     env_vars: HashMap<String, String>,
-    aliases: HashMap<String, String>,
+    aliases: HashMap<String, Vec<String>>,
     last_exit_code: i32,
+    history_entries: Vec<String>, // Store history commands for display
 }
 
 impl Executor {
@@ -85,7 +86,13 @@ impl Executor {
             env_vars,
             aliases: HashMap::new(),
             last_exit_code: 0,
+            history_entries: Vec::new(),
         }
+    }
+
+    /// Set history entries for the history command
+    pub fn set_history(&mut self, entries: Vec<String>) {
+        self.history_entries = entries;
     }
 
     /// Get last exit code
@@ -133,8 +140,7 @@ impl Executor {
                 self.builtin_unset(&cmd.args)
             }
             BuiltinCommand::History => {
-                // History is handled by REPL
-                Ok(ExecutionResult::success())
+                self.builtin_history(&cmd.args)
             }
             BuiltinCommand::Help => {
                 self.builtin_help()
@@ -253,25 +259,86 @@ impl Executor {
         Ok(ExecutionResult::success())
     }
 
+    fn builtin_history(&self, _args: &[String]) -> Result<ExecutionResult> {
+        if self.history_entries.is_empty() {
+            println!("No history available");
+        } else {
+            for (i, cmd) in self.history_entries.iter().enumerate() {
+                println!("{:5}  {}", i + 1, cmd);
+            }
+        }
+        Ok(ExecutionResult::success())
+    }
+
     fn builtin_alias(&mut self, args: &[String]) -> Result<ExecutionResult> {
         if args.is_empty() {
             // List all aliases
-            for (name, value) in &self.aliases {
-                println!("alias {}='{}'", name, value);
+            for (name, tokens) in &self.aliases {
+                println!("alias {}='{}'", name, tokens.join(" "));
             }
         } else {
             for arg in args {
                 if let Some((name, value)) = arg.split_once('=') {
-                    self.aliases.insert(name.to_string(), value.to_string());
+                    // Parse the alias value into tokens (handle quotes)
+                    let tokens = self.parse_alias_value(value);
+                    self.aliases.insert(name.to_string(), tokens);
                 } else {
                     // Show specific alias
-                    if let Some(value) = self.aliases.get(arg) {
-                        println!("alias {}='{}'", arg, value);
+                    if let Some(tokens) = self.aliases.get(arg) {
+                        println!("alias {}='{}'", arg, tokens.join(" "));
                     }
                 }
             }
         }
         Ok(ExecutionResult::success())
+    }
+
+    /// Parse alias value into tokens, handling quotes
+    fn parse_alias_value(&self, value: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut current_token = String::new();
+        let mut in_single_quote = false;
+        let mut in_double_quote = false;
+        let mut chars = value.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            match c {
+                '\'' if !in_double_quote => {
+                    in_single_quote = !in_single_quote;
+                }
+                '"' if !in_single_quote => {
+                    in_double_quote = !in_double_quote;
+                }
+                ' ' | '\t' if !in_single_quote && !in_double_quote => {
+                    if !current_token.is_empty() {
+                        tokens.push(current_token.clone());
+                        current_token.clear();
+                    }
+                }
+                '\\' if in_double_quote => {
+                    // Handle escape in double quotes
+                    if let Some(&next) = chars.peek() {
+                        if next == '"' || next == '\\' || next == '$' {
+                            chars.next();
+                            current_token.push(next);
+                        } else {
+                            current_token.push(c);
+                        }
+                    } else {
+                        current_token.push(c);
+                    }
+                }
+                _ => {
+                    current_token.push(c);
+                }
+            }
+        }
+
+        if !current_token.is_empty() {
+            tokens.push(current_token);
+        }
+
+        tokens
     }
 
     /// Execute external commands in a pipeline
@@ -283,47 +350,55 @@ impl Executor {
             let is_first = i == 0;
             let is_last = i == commands.len() - 1;
 
-            // Resolve alias
-            let program = self.aliases.get(&cmd.program)
-                .cloned()
-                .unwrap_or_else(|| cmd.program.clone());
+            // Resolve alias - expand tokens
+            let (program, expanded_args) = if let Some(alias_tokens) = self.aliases.get(&cmd.program) {
+                // First token is the program, rest are prepended args
+                if alias_tokens.is_empty() {
+                    (cmd.program.clone(), cmd.args.clone())
+                } else {
+                    let prog = alias_tokens[0].clone();
+                    let mut args = alias_tokens[1..].to_vec();
+                    args.extend(cmd.args.iter().cloned());
+                    (prog, args)
+                }
+            } else {
+                (cmd.program.clone(), cmd.args.clone())
+            };
 
             let mut process = ProcessCommand::new(&program);
-            process.args(&cmd.args);
+            process.args(&expanded_args);
 
             // Set up environment
             for (key, value) in &self.env_vars {
                 process.env(key, value);
             }
 
-            // Set up stdin
-            if is_first {
-                if let Some(ref input_file) = cmd.stdin_redirect {
-                    let file = File::open(input_file)
-                        .with_context(|| format!("Cannot open file for input: {}", input_file))?;
-                    process.stdin(Stdio::from(file));
-                } else {
-                    process.stdin(Stdio::inherit());
-                }
+            // Set up stdin (redirect takes priority over pipe)
+            if let Some(ref input_file) = cmd.stdin_redirect {
+                // Explicit stdin redirect overrides pipe input
+                let file = File::open(input_file)
+                    .with_context(|| format!("Cannot open file for input: {}", input_file))?;
+                process.stdin(Stdio::from(file));
+            } else if is_first {
+                process.stdin(Stdio::inherit());
             } else if let Some(stdout) = prev_stdout.take() {
                 process.stdin(Stdio::from(stdout));
             }
 
-            // Set up stdout
-            if is_last {
-                if let Some(ref output_file) = cmd.stdout_redirect {
-                    let file = if cmd.stdout_append {
-                        OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(output_file)
-                    } else {
-                        File::create(output_file)
-                    }.with_context(|| format!("Cannot open file for output: {}", output_file))?;
-                    process.stdout(Stdio::from(file));
+            // Set up stdout (redirect takes priority over pipe)
+            if let Some(ref output_file) = cmd.stdout_redirect {
+                // Explicit stdout redirect breaks the pipe chain
+                let file = if cmd.stdout_append {
+                    OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(output_file)
                 } else {
-                    process.stdout(Stdio::inherit());
-                }
+                    File::create(output_file)
+                }.with_context(|| format!("Cannot open file for output: {}", output_file))?;
+                process.stdout(Stdio::from(file));
+            } else if is_last {
+                process.stdout(Stdio::inherit());
             } else {
                 process.stdout(Stdio::piped());
             }
@@ -405,5 +480,66 @@ mod tests {
         let mut executor = Executor::new();
         executor.builtin_export(&["TEST_VAR=hello".to_string()]).unwrap();
         assert_eq!(executor.get_env("TEST_VAR"), Some(&"hello".to_string()));
+    }
+
+    #[test]
+    fn test_alias_with_spaces() {
+        let mut executor = Executor::new();
+
+        // Test alias with multiple tokens
+        executor.builtin_alias(&["ll=ls -la".to_string()]).unwrap();
+
+        let alias_tokens = executor.aliases.get("ll").unwrap();
+        assert_eq!(alias_tokens.len(), 2);
+        assert_eq!(alias_tokens[0], "ls");
+        assert_eq!(alias_tokens[1], "-la");
+    }
+
+    #[test]
+    fn test_alias_with_quotes() {
+        let mut executor = Executor::new();
+
+        // Test alias with quoted string
+        executor.builtin_alias(&["greet=echo 'hello world'".to_string()]).unwrap();
+
+        let alias_tokens = executor.aliases.get("greet").unwrap();
+        assert_eq!(alias_tokens.len(), 2);
+        assert_eq!(alias_tokens[0], "echo");
+        assert_eq!(alias_tokens[1], "hello world");
+    }
+
+    #[test]
+    fn test_alias_expansion() {
+        let mut executor = Executor::new();
+
+        // Create an alias
+        executor.builtin_alias(&["ll=ls -la".to_string()]).unwrap();
+
+        // Simulate command that uses the alias
+        let cmd = Command {
+            program: "ll".to_string(),
+            args: vec!["/tmp".to_string()],
+            stdin_redirect: None,
+            stdout_redirect: None,
+            stdout_append: false,
+        };
+
+        // Get the alias
+        let (program, expanded_args) = if let Some(alias_tokens) = executor.aliases.get(&cmd.program) {
+            if alias_tokens.is_empty() {
+                (cmd.program.clone(), cmd.args.clone())
+            } else {
+                let prog = alias_tokens[0].clone();
+                let mut args = alias_tokens[1..].to_vec();
+                args.extend(cmd.args.iter().cloned());
+                (prog, args)
+            }
+        } else {
+            (cmd.program.clone(), cmd.args.clone())
+        };
+
+        // Verify expansion
+        assert_eq!(program, "ls");
+        assert_eq!(expanded_args, vec!["-la", "/tmp"]);
     }
 }
