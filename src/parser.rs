@@ -225,26 +225,56 @@ impl Parser {
                     }
                 }
                 ParserState::RedirectOut | ParserState::RedirectAppend => {
-                    if c.is_whitespace() {
-                        if !current_token.is_empty() {
-                            current_command.stdout_redirect = Some(current_token.clone());
-                            current_command.stdout_append = state == ParserState::RedirectAppend;
-                            current_token.clear();
-                            state = ParserState::Argument;
+                    match c {
+                        ' ' | '\t' => {
+                            if !current_token.is_empty() {
+                                current_command.stdout_redirect = Some(current_token.clone());
+                                current_command.stdout_append = state == ParserState::RedirectAppend;
+                                current_token.clear();
+                                state = ParserState::Argument;
+                            }
                         }
-                    } else {
-                        current_token.push(c);
+                        '\'' => {
+                            prev_state = state.clone();
+                            state = ParserState::SingleQuote;
+                        }
+                        '"' => {
+                            prev_state = state.clone();
+                            state = ParserState::DoubleQuote;
+                        }
+                        '\\' => {
+                            prev_state = state.clone();
+                            state = ParserState::Escape;
+                        }
+                        _ => {
+                            current_token.push(c);
+                        }
                     }
                 }
                 ParserState::RedirectIn => {
-                    if c.is_whitespace() {
-                        if !current_token.is_empty() {
-                            current_command.stdin_redirect = Some(current_token.clone());
-                            current_token.clear();
-                            state = ParserState::Argument;
+                    match c {
+                        ' ' | '\t' => {
+                            if !current_token.is_empty() {
+                                current_command.stdin_redirect = Some(current_token.clone());
+                                current_token.clear();
+                                state = ParserState::Argument;
+                            }
                         }
-                    } else {
-                        current_token.push(c);
+                        '\'' => {
+                            prev_state = state.clone();
+                            state = ParserState::SingleQuote;
+                        }
+                        '"' => {
+                            prev_state = state.clone();
+                            state = ParserState::DoubleQuote;
+                        }
+                        '\\' => {
+                            prev_state = state.clone();
+                            state = ParserState::Escape;
+                        }
+                        _ => {
+                            current_token.push(c);
+                        }
                     }
                 }
                 ParserState::AIMode => {
@@ -432,6 +462,37 @@ mod tests {
                 assert_eq!(cmds.len(), 1);
                 assert_eq!(cmds[0].stdout_redirect, Some("file.txt".to_string()));
                 assert!(cmds[0].stdout_append);
+            }
+            _ => panic!("Expected Commands"),
+        }
+    }
+
+    #[test]
+    fn test_redirect_with_quoted_filename() {
+        let parser = Parser::new("!".to_string());
+        // Test double quotes
+        match parser.parse("echo hi > \"build logs/output.txt\"") {
+            ParseResult::Commands(cmds) => {
+                assert_eq!(cmds.len(), 1);
+                assert_eq!(cmds[0].stdout_redirect, Some("build logs/output.txt".to_string()));
+            }
+            _ => panic!("Expected Commands"),
+        }
+
+        // Test single quotes
+        match parser.parse("echo hi > 'my file.txt'") {
+            ParseResult::Commands(cmds) => {
+                assert_eq!(cmds.len(), 1);
+                assert_eq!(cmds[0].stdout_redirect, Some("my file.txt".to_string()));
+            }
+            _ => panic!("Expected Commands"),
+        }
+
+        // Test input redirect with quotes
+        match parser.parse("cat < \"input file.txt\"") {
+            ParseResult::Commands(cmds) => {
+                assert_eq!(cmds.len(), 1);
+                assert_eq!(cmds[0].stdin_redirect, Some("input file.txt".to_string()));
             }
             _ => panic!("Expected Commands"),
         }

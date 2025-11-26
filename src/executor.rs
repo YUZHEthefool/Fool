@@ -7,7 +7,7 @@ use crate::parser::Command;
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command as ProcessCommand, ExitStatus, Stdio};
 
@@ -155,8 +155,7 @@ impl Executor {
                 self.builtin_alias(&cmd.args)
             }
             BuiltinCommand::Source => {
-                // Source is complex, simplified here
-                Ok(ExecutionResult::success())
+                self.builtin_source(&cmd.args)
             }
         }
     }
@@ -293,6 +292,75 @@ impl Executor {
         Ok(ExecutionResult::success())
     }
 
+    fn builtin_source(&mut self, args: &[String]) -> Result<ExecutionResult> {
+        if args.is_empty() {
+            eprintln!("source: usage: source <filename>");
+            self.last_exit_code = 1;
+            return Ok(ExecutionResult::with_code(1));
+        }
+
+        let file_path = &args[0];
+
+        // Expand ~ to home directory
+        let expanded_path = if file_path.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(&file_path[2..])
+            } else {
+                Path::new(file_path).to_path_buf()
+            }
+        } else {
+            Path::new(file_path).to_path_buf()
+        };
+
+        // Read the file
+        let content = match std::fs::read_to_string(&expanded_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("source: {}: {}", expanded_path.display(), e);
+                self.last_exit_code = 1;
+                return Ok(ExecutionResult::with_code(1));
+            }
+        };
+
+        // Parse and execute each line
+        let parser = crate::parser::Parser::new("!".to_string());
+        let mut last_exit_code = 0;
+
+        for line in content.lines() {
+            let line = line.trim();
+
+            // Skip empty lines and comments
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            match parser.parse(line) {
+                crate::parser::ParseResult::Commands(commands) => {
+                    match self.execute_pipeline(commands) {
+                        Ok(result) => {
+                            last_exit_code = result.exit_code;
+                        }
+                        Err(e) => {
+                            eprintln!("source: error executing '{}': {}", line, e);
+                            last_exit_code = 1;
+                        }
+                    }
+                }
+                crate::parser::ParseResult::Empty => {}
+                crate::parser::ParseResult::AIQuery(_) => {
+                    // Skip AI queries in sourced files
+                }
+                crate::parser::ParseResult::Error(e) => {
+                    eprintln!("source: parse error in '{}': {}", line, e);
+                    last_exit_code = 1;
+                }
+            }
+        }
+
+        self.last_exit_code = last_exit_code;
+        Ok(ExecutionResult::with_code(last_exit_code))
+    }
+
     /// Parse alias value into tokens, handling quotes
     fn parse_alias_value(&self, value: &str) -> Vec<String> {
         let mut tokens = Vec::new();
@@ -345,6 +413,7 @@ impl Executor {
     fn execute_external_pipeline(&mut self, commands: Vec<Command>) -> Result<ExecutionResult> {
         let mut children: Vec<Child> = Vec::new();
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
+        let mut capture_stdout = false;
 
         for (i, cmd) in commands.iter().enumerate() {
             let is_first = i == 0;
@@ -398,7 +467,9 @@ impl Executor {
                 }.with_context(|| format!("Cannot open file for output: {}", output_file))?;
                 process.stdout(Stdio::from(file));
             } else if is_last {
-                process.stdout(Stdio::inherit());
+                // For the last command, capture stdout for history while also displaying it
+                process.stdout(Stdio::piped());
+                capture_stdout = true;
             } else {
                 process.stdout(Stdio::piped());
             }
@@ -417,6 +488,42 @@ impl Executor {
             children.push(child);
         }
 
+        // Capture and display stdout from last command if needed
+        let mut stdout_summary = None;
+        if capture_stdout {
+            if let Some(last_child) = children.last_mut() {
+                if let Some(stdout) = last_child.stdout.take() {
+                    let reader = BufReader::new(stdout);
+                    let mut output = String::new();
+                    const MAX_CAPTURE: usize = 4096; // Capture up to 4KB for summary
+
+                    for line in reader.lines() {
+                        if let Ok(line) = line {
+                            // Display to terminal
+                            println!("{}", line);
+
+                            // Capture for summary (limited size)
+                            if output.len() < MAX_CAPTURE {
+                                if !output.is_empty() {
+                                    output.push('\n');
+                                }
+                                output.push_str(&line);
+                            }
+                        }
+                    }
+
+                    if !output.is_empty() {
+                        // Truncate if too long
+                        if output.len() >= MAX_CAPTURE {
+                            output.truncate(MAX_CAPTURE - 20);
+                            output.push_str("\n... (truncated)");
+                        }
+                        stdout_summary = Some(output);
+                    }
+                }
+            }
+        }
+
         // Wait for all children and get the last exit status
         let mut last_status: Option<ExitStatus> = None;
         for mut child in children {
@@ -429,7 +536,11 @@ impl Executor {
 
         self.last_exit_code = exit_code;
 
-        Ok(ExecutionResult::with_code(exit_code))
+        Ok(ExecutionResult {
+            exit_code,
+            stdout: stdout_summary,
+            stderr: None,
+        })
     }
 
     /// Check if command is a builtin

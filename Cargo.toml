@@ -21,9 +21,6 @@ toml = "0.8"
 rustyline = { version = "14.0", features = ["derive"] }
 crossterm = "0.28"
 
-# Syntax highlighting
-syntect = "5.1"
-
 # Markdown rendering in terminal
 termimad = "0.30"
 
@@ -36,13 +33,9 @@ thiserror = "1.0"
 
 # Async streaming
 futures = "0.3"
-tokio-stream = "0.1"
 
 # Environment variables
 dotenv = "0.15"
-
-# UUID for history
-uuid = { version = "1.6", features = ["v4"] }
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }

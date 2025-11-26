@@ -340,19 +340,35 @@ impl Repl {
                         ParseResult::Commands(commands) => {
                             // Add to our history
                             let entry = HistoryEntry::new(line.to_string());
-                            let _ = self.history.add(entry);
+                            if let Err(e) = self.history.add(entry) {
+                                eprintln!("{}: Failed to write to history: {}", "Warning".with(Color::Yellow).bold(), e);
+                            }
 
-                            // Sync history to executor so history command works in pipelines
-                            self.executor.set_history(self.history.get_all_commands().iter().map(|s| s.to_string()).collect());
+                            // Only sync history to executor when history command is being called
+                            // This avoids O(n) copy on every command execution
+                            let needs_history = commands.iter().any(|c| c.program == "history");
+                            if needs_history {
+                                self.executor.set_history(self.history.get_all_commands().iter().map(|s| s.to_string()).collect());
+                            }
 
                             // Execute commands
                             match self.executor.execute_pipeline(commands) {
                                 Ok(exec_result) => {
-                                    let _ = self.history.update_last_exit_code(exec_result.exit_code);
+                                    // Update history with exit code and stdout summary
+                                    if let Some(last_entry) = self.history.last_mut() {
+                                        if let Some(ref stdout) = exec_result.stdout {
+                                            last_entry.stdout_summary = Some(stdout.clone());
+                                        }
+                                    }
+                                    if let Err(e) = self.history.update_last_exit_code(exec_result.exit_code) {
+                                        eprintln!("{}: Failed to update history exit code: {}", "Warning".with(Color::Yellow).bold(), e);
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("{}: {}", "Error".with(Color::Red).bold(), e);
-                                    let _ = self.history.update_last_exit_code(1);
+                                    if let Err(e) = self.history.update_last_exit_code(1) {
+                                        eprintln!("{}: Failed to update history exit code: {}", "Warning".with(Color::Yellow).bold(), e);
+                                    }
                                 }
                             }
                         }
@@ -364,7 +380,9 @@ impl Repl {
 
                             // Add AI query to history
                             let entry = HistoryEntry::new(format!("! {}", query));
-                            let _ = self.history.add(entry);
+                            if let Err(e) = self.history.add(entry) {
+                                eprintln!("{}: Failed to write to history: {}", "Warning".with(Color::Yellow).bold(), e);
+                            }
 
                             // Execute AI query
                             if !self.ai_agent.is_configured() {
@@ -377,11 +395,15 @@ impl Repl {
 
                             match self.ai_agent.query_stream(&query, &self.history).await {
                                 Ok(_response) => {
-                                    let _ = self.history.update_last_exit_code(0);
+                                    if let Err(e) = self.history.update_last_exit_code(0) {
+                                        eprintln!("{}: Failed to update history exit code: {}", "Warning".with(Color::Yellow).bold(), e);
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("{}: {}", "AI Error".with(Color::Red).bold(), e);
-                                    let _ = self.history.update_last_exit_code(1);
+                                    if let Err(e) = self.history.update_last_exit_code(1) {
+                                        eprintln!("{}: Failed to update history exit code: {}", "Warning".with(Color::Yellow).bold(), e);
+                                    }
                                 }
                             }
                         }

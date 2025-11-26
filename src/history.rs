@@ -52,6 +52,7 @@ pub struct History {
     file_path: Option<PathBuf>,  // None = memory-only mode
     max_entries: usize,
     entries_since_compact: usize,  // Track entries added since last compaction
+    pending_entry: bool,  // Track if last entry needs exit code update
 }
 
 impl History {
@@ -69,6 +70,7 @@ impl History {
             file_path: Some(file_path),
             max_entries,
             entries_since_compact: 0,
+            pending_entry: false,
         };
 
         history.load()?;
@@ -82,6 +84,7 @@ impl History {
             file_path: None,
             max_entries,
             entries_since_compact: 0,
+            pending_entry: false,
         }
     }
 
@@ -123,27 +126,16 @@ impl History {
         Ok(())
     }
 
-    /// Add a new entry to history
+    /// Add a new entry to history (without exit code initially)
     pub fn add(&mut self, entry: HistoryEntry) -> Result<()> {
-        // Append to file (if not memory-only mode)
-        if let Some(file_path) = &self.file_path {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(file_path)
-                .with_context(|| format!("Failed to open history file for writing: {:?}", file_path))?;
-
-            let json = serde_json::to_string(&entry)
-                .with_context(|| "Failed to serialize history entry")?;
-            writeln!(file, "{}", json)
-                .with_context(|| "Failed to write history entry")?;
-        }
-
-        // Add to memory
+        // Add to memory first
         self.entries.push_back(entry);
         if self.entries.len() > self.max_entries {
             self.entries.pop_front();
         }
+
+        // Mark that we have a pending entry that will need its exit code updated
+        self.pending_entry = true;
 
         // Track entries added since last compaction
         self.entries_since_compact += 1;
@@ -196,12 +188,33 @@ impl History {
         self.entries.back()
     }
 
-    /// Update the exit code of the last entry (both in memory and on disk)
+    /// Get the last entry mutably
+    pub fn last_mut(&mut self) -> Option<&mut HistoryEntry> {
+        self.entries.back_mut()
+    }
+
+    /// Update the exit code of the last entry and write complete entry to disk
     pub fn update_last_exit_code(&mut self, code: i32) -> Result<()> {
         if let Some(entry) = self.entries.back_mut() {
             entry.exit_code = Some(code);
-            // Rewrite the entire history file to persist the update
-            self.compact()?;
+
+            // Now write the complete entry to disk (append-only)
+            if let Some(file_path) = &self.file_path {
+                if self.pending_entry {
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(file_path)
+                        .with_context(|| format!("Failed to open history file for writing: {:?}", file_path))?;
+
+                    let json = serde_json::to_string(&entry)
+                        .with_context(|| "Failed to serialize history entry")?;
+                    writeln!(file, "{}", json)
+                        .with_context(|| "Failed to write history entry")?;
+
+                    self.pending_entry = false;
+                }
+            }
         }
         Ok(())
     }
