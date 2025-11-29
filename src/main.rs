@@ -36,8 +36,13 @@ fn print_usage() {
     println!("  --init-config    Generate default config file");
 }
 
-/// Initialize config file
+/// Initialize config file with secure permissions
 fn init_config() -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
     let path = Config::default_path();
     if path.exists() {
         println!("Config file already exists at: {:?}", path);
@@ -45,14 +50,30 @@ fn init_config() -> Result<()> {
         return Ok(());
     }
 
-    // Create parent directory
+    // Create parent directory with restricted permissions
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o700);
+            let _ = std::fs::set_permissions(parent, perms);
+        }
     }
 
-    // Write default config
+    // Write default config with secure permissions (0o600)
     let content = Config::generate_default_config();
-    std::fs::write(&path, content)?;
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = options.open(&path)?;
+    file.write_all(content.as_bytes())?;
+
     println!("Config file created at: {:?}", path);
     println!("Edit this file to configure AI and other settings.");
     Ok(())
@@ -61,7 +82,7 @@ fn init_config() -> Result<()> {
 /// Execute a single command (non-interactive mode)
 async fn execute_command(cmd: &str, config: Config) -> Result<i32> {
     let parser = parser::Parser::new(config.ai.trigger_prefix.clone());
-    let mut executor = executor::Executor::new();
+    let mut executor = executor::Executor::with_ai_trigger(config.ai.trigger_prefix.clone());
     // Use memory-only history for -c mode (no file I/O required)
     let history = history::History::new_memory_only(config.history.max_entries);
     let ai_agent = ai::AiAgent::new(config.ai.clone());

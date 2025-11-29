@@ -11,6 +11,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 /// A single history entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -201,9 +204,14 @@ impl History {
             // Now write the complete entry to disk (append-only)
             if let Some(file_path) = &self.file_path {
                 if self.pending_entry {
-                    let mut file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
+                    let mut options = OpenOptions::new();
+                    options.create(true).append(true);
+
+                    // Set secure permissions (0o600) on Unix to protect command history
+                    #[cfg(unix)]
+                    options.mode(0o600);
+
+                    let mut file = options
                         .open(file_path)
                         .with_context(|| format!("Failed to open history file for writing: {:?}", file_path))?;
 
@@ -251,7 +259,15 @@ impl History {
         let temp_path = file_path.with_extension("tmp");
 
         {
-            let mut file = File::create(&temp_path)
+            // Create temp file with secure permissions (0o600)
+            let mut options = OpenOptions::new();
+            options.create(true).write(true).truncate(true);
+
+            #[cfg(unix)]
+            options.mode(0o600);
+
+            let mut file = options
+                .open(&temp_path)
                 .with_context(|| format!("Failed to create temp history file: {:?}", temp_path))?;
 
             for entry in &self.entries {

@@ -7,7 +7,7 @@ use crate::parser::Command;
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Child, Command as ProcessCommand, ExitStatus, Stdio};
 
@@ -75,10 +75,17 @@ pub struct Executor {
     aliases: HashMap<String, Vec<String>>,
     last_exit_code: i32,
     history_entries: Vec<String>, // Store history commands for display
+    ai_trigger_prefix: String,    // M-03: Store AI trigger prefix for source command
 }
 
 impl Executor {
     pub fn new() -> Self {
+        Self::with_ai_trigger("!".to_string())
+    }
+
+    /// Create executor with custom AI trigger prefix
+    /// M-03: This allows source command to use the configured trigger
+    pub fn with_ai_trigger(ai_trigger_prefix: String) -> Self {
         // Initialize with current environment
         let env_vars: HashMap<String, String> = std::env::vars().collect();
 
@@ -87,6 +94,7 @@ impl Executor {
             aliases: HashMap::new(),
             last_exit_code: 0,
             history_entries: Vec::new(),
+            ai_trigger_prefix,
         }
     }
 
@@ -322,8 +330,8 @@ impl Executor {
             }
         };
 
-        // Parse and execute each line
-        let parser = crate::parser::Parser::new("!".to_string());
+        // M-03: Use the configured AI trigger prefix instead of hardcoded "!"
+        let parser = crate::parser::Parser::new(self.ai_trigger_prefix.clone());
         let mut last_exit_code = 0;
 
         for line in content.lines() {
@@ -347,8 +355,12 @@ impl Executor {
                     }
                 }
                 crate::parser::ParseResult::Empty => {}
-                crate::parser::ParseResult::AIQuery(_) => {
-                    // Skip AI queries in sourced files
+                crate::parser::ParseResult::AIQuery(query) => {
+                    // M-03: Warn user that AI queries in sourced files are not executed
+                    eprintln!(
+                        "source: AI query '{}{}' skipped (AI queries not supported in source files)",
+                        self.ai_trigger_prefix, query
+                    );
                 }
                 crate::parser::ParseResult::Error(e) => {
                     eprintln!("source: parse error in '{}': {}", line, e);
@@ -409,11 +421,19 @@ impl Executor {
         tokens
     }
 
+    /// Clean up spawned children to prevent zombie processes
+    fn cleanup_children(children: &mut Vec<Child>) {
+        for child in children.iter_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        children.clear();
+    }
+
     /// Execute external commands in a pipeline
     fn execute_external_pipeline(&mut self, commands: Vec<Command>) -> Result<ExecutionResult> {
         let mut children: Vec<Child> = Vec::new();
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
-        let mut capture_stdout = false;
 
         for (i, cmd) in commands.iter().enumerate() {
             let is_first = i == 0;
@@ -434,6 +454,14 @@ impl Executor {
                 (cmd.program.clone(), cmd.args.clone())
             };
 
+            // H-05: Warn about redirections on middle pipeline commands
+            if !is_first && !is_last && (cmd.stdin_redirect.is_some() || cmd.stdout_redirect.is_some()) {
+                eprintln!(
+                    "Warning: redirections on middle pipeline command '{}' may not behave as expected",
+                    program
+                );
+            }
+
             let mut process = ProcessCommand::new(&program);
             process.args(&expanded_args);
 
@@ -445,8 +473,13 @@ impl Executor {
             // Set up stdin (redirect takes priority over pipe)
             if let Some(ref input_file) = cmd.stdin_redirect {
                 // Explicit stdin redirect overrides pipe input
-                let file = File::open(input_file)
-                    .with_context(|| format!("Cannot open file for input: {}", input_file))?;
+                let file = match File::open(input_file) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        Self::cleanup_children(&mut children);
+                        return Err(anyhow!("Cannot open file for input: {}: {}", input_file, e));
+                    }
+                };
                 process.stdin(Stdio::from(file));
             } else if is_first {
                 process.stdin(Stdio::inherit());
@@ -456,7 +489,7 @@ impl Executor {
 
             // Set up stdout (redirect takes priority over pipe)
             if let Some(ref output_file) = cmd.stdout_redirect {
-                // Explicit stdout redirect breaks the pipe chain
+                // Explicit stdout redirect
                 let file = if cmd.stdout_append {
                     OpenOptions::new()
                         .create(true)
@@ -464,12 +497,19 @@ impl Executor {
                         .open(output_file)
                 } else {
                     File::create(output_file)
-                }.with_context(|| format!("Cannot open file for output: {}", output_file))?;
+                };
+                let file = match file {
+                    Ok(f) => f,
+                    Err(e) => {
+                        Self::cleanup_children(&mut children);
+                        return Err(anyhow!("Cannot open file for output: {}: {}", output_file, e));
+                    }
+                };
                 process.stdout(Stdio::from(file));
             } else if is_last {
-                // For the last command, capture stdout for history while also displaying it
-                process.stdout(Stdio::piped());
-                capture_stdout = true;
+                // H-03 FIX: Allow the final command to inherit TTY for interactive programs
+                // This enables programs like vim, top, less, ssh to work correctly
+                process.stdout(Stdio::inherit());
             } else {
                 process.stdout(Stdio::piped());
             }
@@ -477,8 +517,15 @@ impl Executor {
             // Stderr always inherits
             process.stderr(Stdio::inherit());
 
-            let mut child = process.spawn()
-                .with_context(|| format!("Command not found: {}", program))?;
+            // H-04 FIX: Clean up already spawned children if spawn fails
+            let mut child = match process.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    drop(prev_stdout); // Explicitly drop to avoid unused assignment warning
+                    Self::cleanup_children(&mut children);
+                    return Err(anyhow!("Command not found: {}: {}", program, e));
+                }
+            };
 
             // Save stdout for next command in pipeline
             if !is_last {
@@ -488,41 +535,9 @@ impl Executor {
             children.push(child);
         }
 
-        // Capture and display stdout from last command if needed
-        let mut stdout_summary = None;
-        if capture_stdout {
-            if let Some(last_child) = children.last_mut() {
-                if let Some(stdout) = last_child.stdout.take() {
-                    let reader = BufReader::new(stdout);
-                    let mut output = String::new();
-                    const MAX_CAPTURE: usize = 4096; // Capture up to 4KB for summary
-
-                    for line in reader.lines() {
-                        if let Ok(line) = line {
-                            // Display to terminal
-                            println!("{}", line);
-
-                            // Capture for summary (limited size)
-                            if output.len() < MAX_CAPTURE {
-                                if !output.is_empty() {
-                                    output.push('\n');
-                                }
-                                output.push_str(&line);
-                            }
-                        }
-                    }
-
-                    if !output.is_empty() {
-                        // Truncate if too long
-                        if output.len() >= MAX_CAPTURE {
-                            output.truncate(MAX_CAPTURE - 20);
-                            output.push_str("\n... (truncated)");
-                        }
-                        stdout_summary = Some(output);
-                    }
-                }
-            }
-        }
+        // H-03: Since we now inherit stdout for the last command (for TTY support),
+        // we no longer capture stdout for history summary. This trade-off ensures
+        // interactive programs like vim, top, less work correctly.
 
         // Wait for all children and get the last exit status
         let mut last_status: Option<ExitStatus> = None;
@@ -538,7 +553,7 @@ impl Executor {
 
         Ok(ExecutionResult {
             exit_code,
-            stdout: stdout_summary,
+            stdout: None,
             stderr: None,
         })
     }

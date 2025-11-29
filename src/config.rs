@@ -5,7 +5,12 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 /// UI configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,15 +166,61 @@ impl Config {
 
     /// Load configuration from a specific path
     pub fn load_from(path: &PathBuf) -> Result<Self> {
-        if path.exists() {
+        let mut config = if path.exists() {
             let content = std::fs::read_to_string(path)
                 .with_context(|| format!("Failed to read config file: {:?}", path))?;
-            let config: Config = toml::from_str(&content)
-                .with_context(|| format!("Failed to parse config file: {:?}", path))?;
-            Ok(config)
+            toml::from_str::<Config>(&content)
+                .with_context(|| format!("Failed to parse config file: {:?}", path))?
         } else {
             // Return default config if file doesn't exist
-            Ok(Config::default())
+            Config::default()
+        };
+
+        // M-04 & M-09: Validate and sanitize configuration values
+        config.validate_and_fix();
+
+        Ok(config)
+    }
+
+    /// Validate configuration values and fix invalid ones with defaults
+    fn validate_and_fix(&mut self) {
+        // M-04: Empty trigger_prefix causes all commands to be treated as AI queries
+        if self.ai.trigger_prefix.is_empty() {
+            eprintln!("Warning: ai.trigger_prefix cannot be empty, using default '!'");
+            self.ai.trigger_prefix = "!".to_string();
+        }
+
+        // M-09: Validate max_entries to prevent excessive memory usage
+        const MAX_HISTORY_ENTRIES: usize = 100_000;
+        if self.history.max_entries > MAX_HISTORY_ENTRIES {
+            eprintln!(
+                "Warning: history.max_entries {} exceeds maximum {}, clamping",
+                self.history.max_entries, MAX_HISTORY_ENTRIES
+            );
+            self.history.max_entries = MAX_HISTORY_ENTRIES;
+        }
+        if self.history.max_entries == 0 {
+            eprintln!("Warning: history.max_entries cannot be 0, using default 10000");
+            self.history.max_entries = 10000;
+        }
+
+        // M-09: Validate temperature (OpenAI API accepts 0.0 to 2.0)
+        if self.ai.temperature < 0.0 || self.ai.temperature > 2.0 {
+            eprintln!(
+                "Warning: ai.temperature {} is out of range [0.0, 2.0], clamping",
+                self.ai.temperature
+            );
+            self.ai.temperature = self.ai.temperature.clamp(0.0, 2.0);
+        }
+
+        // M-09: Validate context_lines to prevent excessive token usage
+        const MAX_CONTEXT_LINES: usize = 1000;
+        if self.ai.context_lines > MAX_CONTEXT_LINES {
+            eprintln!(
+                "Warning: ai.context_lines {} exceeds maximum {}, clamping",
+                self.ai.context_lines, MAX_CONTEXT_LINES
+            );
+            self.ai.context_lines = MAX_CONTEXT_LINES;
         }
     }
 
@@ -180,17 +231,39 @@ impl Config {
     }
 
     /// Save configuration to a specific path
+    /// Uses restricted permissions (0o600 on Unix) to protect sensitive data like API keys
     pub fn save_to(&self, path: &PathBuf) -> Result<()> {
-        // Ensure parent directory exists
+        // Ensure parent directory exists with restricted permissions
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
+
+            // Set directory permissions to 0o700 on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o700);
+                let _ = std::fs::set_permissions(parent, perms);
+            }
         }
 
         let content = toml::to_string_pretty(self)
             .with_context(|| "Failed to serialize config")?;
-        std::fs::write(path, content)
+
+        // Create file with restricted permissions (0o600 on Unix)
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+
+        #[cfg(unix)]
+        options.mode(0o600);
+
+        let mut file = options
+            .open(path)
+            .with_context(|| format!("Failed to open config file for writing: {:?}", path))?;
+
+        file.write_all(content.as_bytes())
             .with_context(|| format!("Failed to write config file: {:?}", path))?;
+
         Ok(())
     }
 

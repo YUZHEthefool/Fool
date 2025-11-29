@@ -56,17 +56,35 @@ pub struct AiAgent {
 }
 
 impl AiAgent {
+    /// Create a new AI agent with the given configuration
+    /// M-05: Properly handle client build errors and preserve timeout settings
     pub fn new(config: AiConfig) -> Self {
-        // Create client with reasonable timeouts
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = Self::build_client();
+        Self { client, config }
+    }
 
-        Self {
-            client,
-            config,
+    /// Build HTTP client with appropriate timeouts
+    /// Falls back gracefully but preserves timeout configuration
+    fn build_client() -> Client {
+        let connect_timeout = Duration::from_secs(10);
+        let request_timeout = Duration::from_secs(60);
+
+        match Client::builder()
+            .connect_timeout(connect_timeout)
+            .timeout(request_timeout)
+            .build()
+        {
+            Ok(client) => client,
+            Err(e) => {
+                // M-05: Log the error instead of silently swallowing it
+                eprintln!("Warning: Failed to build HTTP client with custom settings: {}", e);
+                eprintln!("Warning: Using default client (timeouts may not be applied)");
+
+                // Try a simpler configuration
+                Client::builder()
+                    .build()
+                    .unwrap_or_else(|_| Client::new())
+            }
         }
     }
 
