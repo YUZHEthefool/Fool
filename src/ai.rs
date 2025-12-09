@@ -196,13 +196,7 @@ impl AiAgent {
 
             // M-01 FIX: Process complete SSE events using proper offset tracking
             // SSE events are separated by double newlines, but we process line by line
-            loop {
-                // Find the next complete line (ending with \n)
-                let newline_pos = match buffer.find('\n') {
-                    Some(pos) => pos,
-                    None => break, // No complete line yet, wait for more data
-                };
-
+            while let Some(newline_pos) = buffer.find('\n') {
                 // Extract the line (without the newline)
                 let line = &buffer[..newline_pos];
 

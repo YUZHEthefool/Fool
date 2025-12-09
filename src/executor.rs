@@ -299,9 +299,9 @@ impl Executor {
         let file_path = &args[0];
 
         // Expand ~ to home directory
-        let expanded_path = if file_path.starts_with("~/") {
+        let expanded_path = if let Some(stripped) = file_path.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
-                home.join(&file_path[2..])
+                home.join(stripped)
             } else {
                 Path::new(file_path).to_path_buf()
             }

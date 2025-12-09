@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -61,14 +61,14 @@ pub struct History {
 
 impl History {
     /// Get the path to the lock file (sidecar file for coordinating access)
-    fn get_lock_path(file_path: &PathBuf) -> PathBuf {
+    fn get_lock_path(file_path: &Path) -> PathBuf {
         file_path.with_extension("lock")
     }
 
     /// Acquire exclusive lock on the sidecar lock file
     /// M-07: Using a sidecar lock file ensures that after rename operations,
     /// all processes still coordinate through the same persistent lock file
-    fn acquire_lock(file_path: &PathBuf) -> Result<File> {
+    fn acquire_lock(file_path: &Path) -> Result<File> {
         let lock_path = Self::get_lock_path(file_path);
 
         let mut lock_options = OpenOptions::new();
@@ -121,9 +121,9 @@ impl History {
     }
 
     fn expand_path(path: &str) -> PathBuf {
-        if path.starts_with("~/") {
+        if let Some(stripped) = path.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
-                return home.join(&path[2..]);
+                return home.join(stripped);
             }
         }
         PathBuf::from(path)
@@ -144,13 +144,11 @@ impl History {
             .with_context(|| format!("Failed to open history file: {:?}", file_path))?;
         let reader = BufReader::new(file);
 
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(entry) = serde_json::from_str::<HistoryEntry>(&line) {
-                    self.entries.push_back(entry);
-                    if self.entries.len() > self.max_entries {
-                        self.entries.pop_front();
-                    }
+        for line in reader.lines().map_while(Result::ok) {
+            if let Ok(entry) = serde_json::from_str::<HistoryEntry>(&line) {
+                self.entries.push_back(entry);
+                if self.entries.len() > self.max_entries {
+                    self.entries.pop_front();
                 }
             }
         }
