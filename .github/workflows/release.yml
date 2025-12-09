@@ -62,14 +62,14 @@ jobs:
             artifact_ext: tar.gz
             use_cross: false
 
-          # macOS x86_64 (Intel)
-          - os: macos-13
+          # macOS x86_64 (Intel) - 使用新的macOS-15-intel runner
+          - os: macos-15-large
             target: x86_64-apple-darwin
             artifact_ext: tar.gz
             use_cross: false
 
-          # macOS aarch64 (Apple Silicon)
-          - os: macos-14
+          # macOS aarch64 (Apple Silicon) - 使用macos-latest
+          - os: macos-latest
             target: aarch64-apple-darwin
             artifact_ext: tar.gz
             use_cross: false
