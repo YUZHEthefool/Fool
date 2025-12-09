@@ -1,8 +1,6 @@
 //! REPL module for Fool Shell
 //! Handles interactive shell with syntax highlighting and completions
 
-#![allow(dead_code)]
-
 use crate::ai::AiAgent;
 use crate::config::Config;
 use crate::executor::Executor;
@@ -51,6 +49,7 @@ impl Prompt {
         )
     }
 
+    #[allow(dead_code)] // Alternative prompt for non-TTY environments
     pub fn generate_plain() -> String {
         let cwd = std::env::current_dir()
             .map(|p| {
@@ -407,20 +406,53 @@ impl Repl {
                                 continue;
                             }
 
-                            match self.ai_agent.query_stream(&query, &self.history).await {
-                                Ok(_response) => {
-                                    // M-02: Only update history if add succeeded
+                            // M-08: Use tokio::select! to allow Ctrl-C interruption during AI streaming
+                            // Select returns an enum to avoid borrowing issues
+                            enum AiOutcome {
+                                Success,
+                                Error(String),
+                                Cancelled,
+                            }
+
+                            let outcome = {
+                                let ai_future = self.ai_agent.query_stream(&query, &self.history);
+                                tokio::pin!(ai_future);
+
+                                tokio::select! {
+                                    result = &mut ai_future => {
+                                        match result {
+                                            Ok(_) => AiOutcome::Success,
+                                            Err(e) => AiOutcome::Error(e.to_string()),
+                                        }
+                                    }
+                                    _ = tokio::signal::ctrl_c() => {
+                                        println!("\n{}", "^C (AI streaming cancelled)".with(Color::Yellow));
+                                        AiOutcome::Cancelled
+                                    }
+                                }
+                                // ai_future is dropped here at end of block
+                            };
+
+                            // Now ai_future is dropped, we can mutate self.history
+                            match outcome {
+                                AiOutcome::Success => {
                                     if history_added {
                                         if let Err(e) = self.history.update_last_exit_code(0) {
                                             eprintln!("{}: Failed to update history exit code: {}", "Warning".with(Color::Yellow).bold(), e);
                                         }
                                     }
                                 }
-                                Err(e) => {
+                                AiOutcome::Error(e) => {
                                     eprintln!("{}: {}", "AI Error".with(Color::Red).bold(), e);
-                                    // M-02: Only update history if add succeeded
                                     if history_added {
                                         if let Err(e) = self.history.update_last_exit_code(1) {
+                                            eprintln!("{}: Failed to update history exit code: {}", "Warning".with(Color::Yellow).bold(), e);
+                                        }
+                                    }
+                                }
+                                AiOutcome::Cancelled => {
+                                    if history_added {
+                                        if let Err(e) = self.history.update_last_exit_code(130) {
                                             eprintln!("{}: Failed to update history exit code: {}", "Warning".with(Color::Yellow).bold(), e);
                                         }
                                     }
@@ -453,6 +485,7 @@ impl Repl {
         Ok(())
     }
 
+    #[allow(dead_code)] // Alternative history display method
     fn print_history(&self) {
         let entries = self.history.get_all_commands();
         if entries.is_empty() {

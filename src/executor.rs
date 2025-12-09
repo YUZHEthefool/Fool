@@ -1,8 +1,6 @@
 //! Command Executor module for Fool Shell
 //! Handles process spawning, pipes, and redirections
 
-#![allow(dead_code)]
-
 use crate::parser::Command;
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
@@ -16,6 +14,7 @@ use std::process::{Child, Command as ProcessCommand, ExitStatus, Stdio};
 pub struct ExecutionResult {
     pub exit_code: i32,
     pub stdout: Option<String>,
+    #[allow(dead_code)] // Reserved for future stderr capture
     pub stderr: Option<String>,
 }
 
@@ -104,6 +103,7 @@ impl Executor {
     }
 
     /// Get last exit code
+    #[allow(dead_code)] // Public API for shell scripting
     pub fn last_exit_code(&self) -> i32 {
         self.last_exit_code
     }
@@ -559,16 +559,19 @@ impl Executor {
     }
 
     /// Check if command is a builtin
+    #[allow(dead_code)] // Public API for command checking
     pub fn is_builtin(cmd: &str) -> bool {
         BuiltinCommand::from_str(cmd).is_some()
     }
 
     /// Get environment variable
+    #[allow(dead_code)] // Public API for environment access
     pub fn get_env(&self, key: &str) -> Option<&String> {
         self.env_vars.get(key)
     }
 
     /// Set environment variable
+    #[allow(dead_code)] // Public API for environment management
     pub fn set_env(&mut self, key: String, value: String) {
         std::env::set_var(&key, &value);
         self.env_vars.insert(key, value);
@@ -667,5 +670,166 @@ mod tests {
         // Verify expansion
         assert_eq!(program, "ls");
         assert_eq!(expanded_args, vec!["-la", "/tmp"]);
+    }
+
+    // L-04: Pipeline execution integration tests
+
+    #[test]
+    fn test_pipeline_with_redirect() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let mut executor = Executor::new();
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("pipeline_out.txt");
+
+        // Test: printf "foo\nbar\n" | grep bar > output.txt
+        let commands = vec![
+            Command {
+                program: "printf".to_string(),
+                args: vec!["foo\\nbar\\n".to_string()],
+                stdin_redirect: None,
+                stdout_redirect: None,
+                stdout_append: false,
+            },
+            Command {
+                program: "grep".to_string(),
+                args: vec!["bar".to_string()],
+                stdin_redirect: None,
+                stdout_redirect: Some(output_path.to_string_lossy().to_string()),
+                stdout_append: false,
+            },
+        ];
+
+        let result = executor.execute_external_pipeline(commands).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(executor.last_exit_code, 0);
+
+        let output = fs::read_to_string(&output_path).unwrap();
+        assert_eq!(output.trim(), "bar");
+    }
+
+    #[test]
+    fn test_pipeline_exit_code_propagation() {
+        let mut executor = Executor::new();
+
+        // Test: echo test | grep nonexistent (should fail with exit code 1)
+        let commands = vec![
+            Command {
+                program: "echo".to_string(),
+                args: vec!["test".to_string()],
+                stdin_redirect: None,
+                stdout_redirect: None,
+                stdout_append: false,
+            },
+            Command {
+                program: "grep".to_string(),
+                args: vec!["nonexistent".to_string()],
+                stdin_redirect: None,
+                stdout_redirect: None,
+                stdout_append: false,
+            },
+        ];
+
+        let result = executor.execute_external_pipeline(commands).unwrap();
+        // grep returns 1 when no match found
+        assert_eq!(result.exit_code, 1);
+        assert_eq!(executor.last_exit_code, 1);
+    }
+
+    #[test]
+    fn test_pipeline_command_not_found() {
+        let mut executor = Executor::new();
+
+        // Test: echo test | nonexistent_command_12345
+        let commands = vec![
+            Command {
+                program: "echo".to_string(),
+                args: vec!["test".to_string()],
+                stdin_redirect: None,
+                stdout_redirect: None,
+                stdout_append: false,
+            },
+            Command {
+                program: "nonexistent_command_12345".to_string(),
+                args: vec![],
+                stdin_redirect: None,
+                stdout_redirect: None,
+                stdout_append: false,
+            },
+        ];
+
+        // Should return an error for command not found
+        let result = executor.execute_external_pipeline(commands);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Command not found") || err_msg.contains("nonexistent_command_12345"));
+    }
+
+    #[test]
+    fn test_single_command_with_redirect() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let mut executor = Executor::new();
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("single_out.txt");
+
+        // Test: echo "hello world" > output.txt
+        let commands = vec![
+            Command {
+                program: "echo".to_string(),
+                args: vec!["hello world".to_string()],
+                stdin_redirect: None,
+                stdout_redirect: Some(output_path.to_string_lossy().to_string()),
+                stdout_append: false,
+            },
+        ];
+
+        let result = executor.execute_external_pipeline(commands).unwrap();
+        assert_eq!(result.exit_code, 0);
+
+        let output = fs::read_to_string(&output_path).unwrap();
+        assert_eq!(output.trim(), "hello world");
+    }
+
+    #[test]
+    fn test_append_redirect() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let mut executor = Executor::new();
+        let dir = tempdir().unwrap();
+        let output_path = dir.path().join("append_out.txt");
+
+        // First write
+        let commands1 = vec![
+            Command {
+                program: "echo".to_string(),
+                args: vec!["line1".to_string()],
+                stdin_redirect: None,
+                stdout_redirect: Some(output_path.to_string_lossy().to_string()),
+                stdout_append: false,
+            },
+        ];
+        executor.execute_external_pipeline(commands1).unwrap();
+
+        // Append write
+        let commands2 = vec![
+            Command {
+                program: "echo".to_string(),
+                args: vec!["line2".to_string()],
+                stdin_redirect: None,
+                stdout_redirect: Some(output_path.to_string_lossy().to_string()),
+                stdout_append: true,
+            },
+        ];
+        executor.execute_external_pipeline(commands2).unwrap();
+
+        let output = fs::read_to_string(&output_path).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "line1");
+        assert_eq!(lines[1], "line2");
     }
 }

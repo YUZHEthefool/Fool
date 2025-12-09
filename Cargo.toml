@@ -1,6 +1,6 @@
 [package]
 name = "fool"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "A state-machine driven shell with native AI integration"
 authors = ["The fool"]
@@ -36,6 +36,9 @@ futures = "0.3"
 
 # Environment variables
 dotenv = "0.15"
+
+# File locking for concurrent access
+fs2 = "0.4"
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }

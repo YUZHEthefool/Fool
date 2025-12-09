@@ -1,0 +1,416 @@
+name: Release
+
+# 触发条件：推送符合语义化版本的tag (v1.2.3)
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# 权限：需要写权限以创建release和更新README
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # 准备阶段：提取版本号并验证
+  prepare:
+    name: Prepare and validate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+      tag_name: ${{ steps.extract.outputs.tag_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: extract
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          VERSION="${TAG_NAME#v}"
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Extracted version: ${VERSION}"
+
+      - name: Verify Cargo.toml version matches tag
+        run: |
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -n1 | cut -d'"' -f2)
+          TAG_VERSION="${{ steps.extract.outputs.version }}"
+          echo "Cargo.toml version: ${CARGO_VERSION}"
+          echo "Tag version: ${TAG_VERSION}"
+          if [ "${CARGO_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::Version mismatch: Cargo.toml has ${CARGO_VERSION} but tag is ${TAG_VERSION}"
+            exit 1
+          fi
+          echo "✓ Version validation passed"
+
+  # 构建阶段：多平台编译
+  build:
+    name: Build for ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_ext: tar.gz
+            use_cross: false
+
+          # macOS x86_64 (Intel)
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_ext: tar.gz
+            use_cross: false
+
+          # macOS aarch64 (Apple Silicon)
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact_ext: tar.gz
+            use_cross: false
+
+          # Windows x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_ext: zip
+            use_cross: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Linux平台需要OpenSSL开发库
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Setup Rust cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-release-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+            ${{ runner.os }}-cargo-
+
+      # 构建release二进制文件
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # Unix系统（Linux/macOS）打包为tar.gz
+      - name: Package artifact (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          ARCHIVE="fool-${VERSION}-${TARGET}.tar.gz"
+
+          # 创建临时目录并复制二进制文件
+          mkdir -p "package/fool-${VERSION}"
+          cp "target/${TARGET}/release/fool" "package/fool-${VERSION}/"
+          cp LICENSE "package/fool-${VERSION}/" || true
+          cp README.md "package/fool-${VERSION}/" || true
+
+          # 打包
+          cd package
+          tar -czf "../${ARCHIVE}" "fool-${VERSION}"
+          cd ..
+
+          # 生成SHA256校验和
+          shasum -a 256 "${ARCHIVE}" | tee "${ARCHIVE}.sha256"
+
+          echo "Created ${ARCHIVE}"
+          ls -lh "${ARCHIVE}"
+
+      # Windows系统打包为zip
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $Version = "${{ needs.prepare.outputs.version }}"
+          $Target = "${{ matrix.target }}"
+          $Archive = "fool-$Version-$Target.zip"
+
+          # 创建临时目录并复制文件
+          New-Item -ItemType Directory -Path "package\fool-$Version" -Force
+          Copy-Item "target\$Target\release\fool.exe" "package\fool-$Version\"
+          Copy-Item "LICENSE" "package\fool-$Version\" -ErrorAction SilentlyContinue
+          Copy-Item "README.md" "package\fool-$Version\" -ErrorAction SilentlyContinue
+
+          # 打包
+          Compress-Archive -Path "package\fool-$Version" -DestinationPath $Archive -Force
+
+          # 生成SHA256校验和
+          $Hash = (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLower()
+          "$Hash  $Archive" | Out-File "$Archive.sha256" -Encoding ASCII -NoNewline
+
+          Write-Host "Created $Archive"
+          Get-Item $Archive | Format-List
+
+      # 上传构建产物
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            fool-${{ needs.prepare.outputs.version }}-${{ matrix.target }}.${{ matrix.artifact_ext }}
+            fool-${{ needs.prepare.outputs.version }}-${{ matrix.target }}.${{ matrix.artifact_ext }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # 发布阶段：创建GitHub Release并更新README
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史以便生成changelog
+
+      # 下载所有构建产物
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      # 列出下载的文件（用于调试）
+      - name: List downloaded artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          ls -lh dist/
+
+      # 创建GitHub Release
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          name: Release ${{ needs.prepare.outputs.tag_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/**
+          body: |
+            # 🎉 fool ${{ needs.prepare.outputs.version }}
+
+            ## 📦 下载链接
+
+            | 平台 | 架构 | 下载链接 |
+            |------|------|----------|
+            | Linux | x86_64 | [fool-${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag_name }}/fool-${{ needs.prepare.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz) |
+            | macOS | x86_64 (Intel) | [fool-${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag_name }}/fool-${{ needs.prepare.outputs.version }}-x86_64-apple-darwin.tar.gz) |
+            | macOS | aarch64 (Apple Silicon) | [fool-${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag_name }}/fool-${{ needs.prepare.outputs.version }}-aarch64-apple-darwin.tar.gz) |
+            | Windows | x86_64 | [fool-${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.tag_name }}/fool-${{ needs.prepare.outputs.version }}-x86_64-pc-windows-msvc.zip) |
+
+            **SHA256校验和文件**: 每个下载链接都附带对应的 `.sha256` 文件
+
+            ## 📝 安装说明
+
+            ### Linux / macOS
+            ```bash
+            # 下载并解压
+            tar -xzf fool-${{ needs.prepare.outputs.version }}-<target>.tar.gz
+            cd fool-${{ needs.prepare.outputs.version }}
+
+            # 可选：移动到系统路径
+            sudo mv fool /usr/local/bin/
+
+            # 验证安装
+            fool --version
+            ```
+
+            ### Windows
+            1. 下载 `.zip` 文件
+            2. 解压到任意目录
+            3. 将解压目录添加到系统PATH环境变量
+            4. 在命令提示符中运行 `fool --version` 验证安装
+
+            ## 🔒 安全校验
+
+            下载后请验证SHA256校验和：
+
+            ```bash
+            # Linux / macOS
+            shasum -a 256 -c fool-${{ needs.prepare.outputs.version }}-<target>.tar.gz.sha256
+
+            # Windows PowerShell
+            Get-FileHash fool-${{ needs.prepare.outputs.version }}-<target>.zip -Algorithm SHA256
+            ```
+
+      # 更新README文件中的版本信息和下载链接
+      - name: Update README with release information
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          echo "Updating README.md with version ${VERSION}..."
+
+          # 先切换到默认分支（必须在修改文件之前）
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin "${DEFAULT_BRANCH}"
+          # 使用git switch创建追踪远程分支的本地分支（在全新runner中也能工作）
+          git switch -c "${DEFAULT_BRANCH}" "origin/${DEFAULT_BRANCH}" 2>/dev/null || git checkout "${DEFAULT_BRANCH}"
+
+          # 确保本地分支与远程同步（必须在修改README之前，避免rebase冲突）
+          git reset --hard "origin/${DEFAULT_BRANCH}"
+
+          # 获取tag的日期（使用确定性的日期避免不必要的commit）
+          export RELEASE_DATE=$(git log -1 --format=%cs "${TAG_NAME}" 2>/dev/null || date -I)
+
+          # 使用Python脚本更新README
+          python3 - <<'PYTHON_SCRIPT'
+          import pathlib
+          import re
+          import os
+
+          # 读取环境变量
+          version = os.environ["VERSION"]
+          tag_name = os.environ["TAG_NAME"]
+          repo = os.environ["REPO"]
+          release_date = os.environ.get("RELEASE_DATE", "unknown")
+
+          # 读取README文件
+          readme_path = pathlib.Path("README.md")
+          if not readme_path.exists():
+              print(f"Warning: {readme_path} not found, skipping README update")
+              exit(0)
+
+          content = readme_path.read_text(encoding="utf-8")
+
+          # CI状态徽章（注意：不包含标记，upsert_section会添加）
+          ci_badge = f"""[![CI](https://github.com/{repo}/actions/workflows/ci.yml/badge.svg)](https://github.com/{repo}/actions/workflows/ci.yml)
+          [![Release](https://github.com/{repo}/actions/workflows/release.yml/badge.svg)](https://github.com/{repo}/actions/workflows/release.yml)"""
+
+          # 下载链接区块（注意：不包含标记，upsert_section会添加）
+          download_section = f"""## 📦 下载最新版本
+
+          **当前版本**: [{tag_name}](https://github.com/{repo}/releases/tag/{tag_name}) (发布于 {release_date})
+
+          ### 快速下载
+
+          | 平台 | 架构 | 下载 |
+          |------|------|------|
+          | 🐧 Linux | x86_64 | [⬇️ 下载](https://github.com/{repo}/releases/download/{tag_name}/fool-{version}-x86_64-unknown-linux-gnu.tar.gz) ([校验和](https://github.com/{repo}/releases/download/{tag_name}/fool-{version}-x86_64-unknown-linux-gnu.tar.gz.sha256)) |
+          | 🍎 macOS | x86_64 (Intel) | [⬇️ 下载](https://github.com/{repo}/releases/download/{tag_name}/fool-{version}-x86_64-apple-darwin.tar.gz) ([校验和](https://github.com/{repo}/releases/download/{tag_name}/fool-{version}-x86_64-apple-darwin.tar.gz.sha256)) |
+          | 🍎 macOS | aarch64 (M1/M2) | [⬇️ 下载](https://github.com/{repo}/releases/download/{tag_name}/fool-{version}-aarch64-apple-darwin.tar.gz) ([校验和](https://github.com/{repo}/releases/download/{tag_name}/fool-{version}-aarch64-apple-darwin.tar.gz.sha256)) |
+          | 🪟 Windows | x86_64 | [⬇️ 下载](https://github.com/{repo}/releases/download/{tag_name}/fool-{version}-x86_64-pc-windows-msvc.zip) ([校验和](https://github.com/{repo}/releases/download/{tag_name}/fool-{version}-x86_64-pc-windows-msvc.zip.sha256)) |
+
+          ### 安装说明
+
+          #### Linux / macOS
+          ```bash
+          # 解压下载的文件
+          tar -xzf fool-{version}-<target>.tar.gz
+          cd fool-{version}
+
+          # 移动到系统路径（可选）
+          sudo mv fool /usr/local/bin/
+
+          # 验证安装
+          fool --version
+          ```
+
+          #### Windows
+          1. 下载对应的 `.zip` 文件
+          2. 解压到任意目录
+          3. 将目录添加到系统 PATH 环境变量
+          4. 打开命令提示符，运行 `fool --version`
+
+          查看 [所有版本](https://github.com/{repo}/releases)"""
+
+          def upsert_section(text, start_marker, end_marker, new_content):
+              """插入或更新README中的标记区块"""
+              pattern = re.compile(
+                  re.escape(start_marker) + r".*?" + re.escape(end_marker),
+                  re.DOTALL
+              )
+
+              replacement = f"{start_marker}\n{new_content.strip()}\n{end_marker}"
+
+              if pattern.search(text):
+                  # 更新现有区块
+                  result = pattern.sub(replacement, text)
+                  print(f"✓ Updated existing section between {start_marker} and {end_marker}")
+                  return result
+              else:
+                  # 在文件开头插入新区块
+                  result = replacement + "\n\n" + text
+                  print(f"✓ Inserted new section with markers {start_marker} and {end_marker}")
+                  return result
+
+          # 更新CI徽章
+          content = upsert_section(
+              content,
+              "<!-- CI_BADGE_START -->",
+              "<!-- CI_BADGE_END -->",
+              ci_badge
+          )
+
+          # 更新下载区块
+          content = upsert_section(
+              content,
+              "<!-- DOWNLOAD_START -->",
+              "<!-- DOWNLOAD_END -->",
+              download_section
+          )
+
+          # 写回文件
+          readme_path.write_text(content, encoding="utf-8")
+          print(f"\n✓ README.md updated successfully for version {version}")
+          PYTHON_SCRIPT
+
+      # 提交README更新到主分支
+      - name: Commit and push README update
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          # 检查是否有变更（分支已在上一步同步）
+          if git diff --quiet README.md; then
+            echo "No changes to README.md, skipping commit"
+          else
+            echo "Committing README.md changes..."
+            git add README.md
+            git commit -m "docs: update README for release ${VERSION} [skip ci]"
+
+            # 推送更新（使用[skip ci]避免触发CI循环）
+            if git push origin HEAD:"${DEFAULT_BRANCH}"; then
+              echo "✓ README.md updated successfully"
+            else
+              echo "Warning: Failed to push README update (this is non-fatal)"
+            fi
+          fi

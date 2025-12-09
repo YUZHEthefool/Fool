@@ -1,8 +1,6 @@
 //! AI module for Fool Shell
 //! Handles OpenAI API integration with streaming support
 
-#![allow(dead_code)]
-
 use crate::config::AiConfig;
 use crate::history::History;
 use anyhow::{anyhow, Context, Result};
@@ -38,6 +36,7 @@ struct StreamChunk {
 #[derive(Debug, Deserialize)]
 struct StreamChoice {
     delta: Delta,
+    #[allow(dead_code)] // Part of API response structure
     finish_reason: Option<String>,
 }
 
@@ -45,9 +44,6 @@ struct StreamChoice {
 struct Delta {
     content: Option<String>,
 }
-
-/// Loading animation frames
-const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// AI Agent for handling queries
 pub struct AiAgent {
@@ -189,39 +185,55 @@ impl AiAgent {
             // Append to buffer to handle chunks that span HTTP boundaries
             buffer.push_str(&text);
 
-            // Process complete SSE events (separated by double newlines)
-            let mut split_pos = 0;
-            for line in buffer.lines() {
-                if line.is_empty() {
-                    continue; // Skip empty lines between events
+            // M-01 FIX: Process complete SSE events using proper offset tracking
+            // SSE events are separated by double newlines, but we process line by line
+            loop {
+                // Find the next complete line (ending with \n)
+                let newline_pos = match buffer.find('\n') {
+                    Some(pos) => pos,
+                    None => break, // No complete line yet, wait for more data
+                };
+
+                // Extract the line (without the newline)
+                let line = &buffer[..newline_pos];
+
+                // Skip empty lines (event separators in SSE)
+                if line.is_empty() || line == "\r" {
+                    buffer = buffer[newline_pos + 1..].to_string();
+                    continue;
                 }
 
+                // Process the line
                 if let Some(data) = line.strip_prefix("data: ") {
-                    if data == "[DONE]" {
-                        // Clear buffer and exit
+                    if data.trim() == "[DONE]" {
                         buffer.clear();
                         break;
                     }
 
-                    if let Ok(sse_chunk) = serde_json::from_str::<StreamChunk>(data) {
-                        for choice in sse_chunk.choices {
-                            if let Some(content) = choice.delta.content {
-                                print!("{}", content);
-                                stdout().flush()?;
-                                full_response.push_str(&content);
+                    // Try to parse as JSON - if it fails, the data might be incomplete
+                    match serde_json::from_str::<StreamChunk>(data) {
+                        Ok(sse_chunk) => {
+                            for choice in sse_chunk.choices {
+                                if let Some(content) = choice.delta.content {
+                                    print!("{}", content);
+                                    stdout().flush()?;
+                                    full_response.push_str(&content);
+                                }
                             }
+                            // Successfully processed, remove from buffer
+                            buffer = buffer[newline_pos + 1..].to_string();
                         }
-                        // Mark this line as processed
-                        split_pos = buffer.find(line).unwrap_or(0) + line.len() + 1;
+                        Err(_) => {
+                            // JSON parse failed - might be incomplete data
+                            // Keep in buffer and wait for more data
+                            break;
+                        }
                     }
+                } else {
+                    // Not a data line (could be event:, id:, retry:, or other)
+                    // Just skip it
+                    buffer = buffer[newline_pos + 1..].to_string();
                 }
-            }
-
-            // Remove processed data from buffer, keep incomplete frames
-            if split_pos > 0 && split_pos < buffer.len() {
-                buffer = buffer[split_pos..].to_string();
-            } else if split_pos >= buffer.len() {
-                buffer.clear();
             }
         }
 
@@ -230,6 +242,7 @@ impl AiAgent {
     }
 
     /// Send a query without streaming (for testing or simple use)
+    #[allow(dead_code)] // Reserved for future non-streaming API usage
     pub async fn query(&self, query: &str, history: &History) -> Result<String> {
         let api_key = self.config.get_api_key()
             .ok_or_else(|| anyhow!("API key not configured"))?;
@@ -270,6 +283,7 @@ impl AiAgent {
 }
 
 /// Render markdown in terminal using termimad
+#[allow(dead_code)] // Reserved for future markdown rendering feature
 pub fn render_markdown(text: &str) {
     use termimad::MadSkin;
 

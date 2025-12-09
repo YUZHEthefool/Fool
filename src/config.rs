@@ -1,8 +1,6 @@
 //! Configuration module for Fool Shell
 //! Handles loading and parsing of config.toml
 
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
@@ -225,6 +223,7 @@ impl Config {
     }
 
     /// Save configuration to the default path
+    #[allow(dead_code)] // Public API for config management
     pub fn save(&self) -> Result<()> {
         let path = Self::default_path();
         self.save_to(&path)
@@ -232,6 +231,7 @@ impl Config {
 
     /// Save configuration to a specific path
     /// Uses restricted permissions (0o600 on Unix) to protect sensitive data like API keys
+    #[allow(dead_code)] // Public API for config management
     pub fn save_to(&self, path: &PathBuf) -> Result<()> {
         // Ensure parent directory exists with restricted permissions
         if let Some(parent) = path.parent() {

@@ -1,8 +1,6 @@
 //! State Machine Parser for Fool Shell
 //! Implements a DFA-based parser for command line input
 
-#![allow(dead_code)]
-
 use std::fmt;
 
 /// Parser states for the state machine
@@ -27,6 +25,7 @@ pub enum ParserState {
     /// After < for input redirection
     RedirectIn,
     /// AI mode triggered by prefix (default: !)
+    #[allow(dead_code)] // Reserved for future state-based AI mode handling
     AIMode,
     /// Escape sequence (backslash)
     Escape,
@@ -61,6 +60,7 @@ pub struct Command {
 }
 
 impl Command {
+    #[allow(dead_code)] // Public API for command construction
     pub fn new(program: String) -> Self {
         Self {
             program,
@@ -297,6 +297,11 @@ impl Parser {
                     current_command.stdin_redirect = Some(current_token);
                     state = ParserState::Argument; // Update state to show we processed the redirect
                 }
+                ParserState::Escape => {
+                    // M-06 FIX: Trailing backslash with content - add content and mark as escape error
+                    self.add_token(&mut current_command, &current_token, &prev_state);
+                    // State remains Escape for error check below
+                }
                 _ => {
                     self.add_token(&mut current_command, &current_token, &state);
                 }
@@ -306,6 +311,11 @@ impl Parser {
         // Add last command if not empty
         if !current_command.is_empty() {
             commands.push(current_command);
+        }
+
+        // M-06 FIX: Check for trailing backslash (incomplete escape sequence)
+        if state == ParserState::Escape {
+            return ParseResult::Error("Syntax error: trailing backslash".to_string());
         }
 
         // Check for unclosed quotes
@@ -495,6 +505,26 @@ mod tests {
                 assert_eq!(cmds[0].stdin_redirect, Some("input file.txt".to_string()));
             }
             _ => panic!("Expected Commands"),
+        }
+    }
+
+    #[test]
+    fn test_trailing_backslash() {
+        let parser = Parser::new("!".to_string());
+        // M-06: Trailing backslash should return an error
+        match parser.parse("echo test\\") {
+            ParseResult::Error(e) => {
+                assert!(e.contains("backslash"), "Expected backslash error, got: {}", e);
+            }
+            other => panic!("Expected Error for trailing backslash, got: {:?}", other),
+        }
+
+        // Single backslash should also be an error
+        match parser.parse("\\") {
+            ParseResult::Error(e) => {
+                assert!(e.contains("backslash"), "Expected backslash error, got: {}", e);
+            }
+            other => panic!("Expected Error for single backslash, got: {:?}", other),
         }
     }
 }

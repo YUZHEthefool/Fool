@@ -1,10 +1,9 @@
 //! History module for Fool Shell
 //! Manages command history with exit codes and timestamps
 
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
@@ -38,11 +37,13 @@ impl HistoryEntry {
         }
     }
 
+    #[allow(dead_code)] // Builder pattern for tests and future use
     pub fn with_exit_code(mut self, code: i32) -> Self {
         self.exit_code = Some(code);
         self
     }
 
+    #[allow(dead_code)] // Builder pattern for tests and future use
     pub fn with_stdout_summary(mut self, summary: String) -> Self {
         self.stdout_summary = Some(summary);
         self
@@ -59,6 +60,33 @@ pub struct History {
 }
 
 impl History {
+    /// Get the path to the lock file (sidecar file for coordinating access)
+    fn get_lock_path(file_path: &PathBuf) -> PathBuf {
+        file_path.with_extension("lock")
+    }
+
+    /// Acquire exclusive lock on the sidecar lock file
+    /// M-07: Using a sidecar lock file ensures that after rename operations,
+    /// all processes still coordinate through the same persistent lock file
+    fn acquire_lock(file_path: &PathBuf) -> Result<File> {
+        let lock_path = Self::get_lock_path(file_path);
+
+        let mut lock_options = OpenOptions::new();
+        lock_options.read(true).write(true).create(true);
+
+        #[cfg(unix)]
+        lock_options.mode(0o600);
+
+        let lock_file = lock_options
+            .open(&lock_path)
+            .with_context(|| format!("Failed to open lock file: {:?}", lock_path))?;
+
+        lock_file.lock_exclusive()
+            .with_context(|| format!("Failed to acquire lock: {:?}", lock_path))?;
+
+        Ok(lock_file)
+    }
+
     pub fn new(file_path: String, max_entries: usize) -> Result<Self> {
         let file_path = Self::expand_path(&file_path);
 
@@ -171,6 +199,7 @@ impl History {
     }
 
     /// Search history by prefix
+    #[allow(dead_code)] // Public API for history search
     pub fn search_prefix(&self, prefix: &str) -> Vec<&HistoryEntry> {
         self.entries
             .iter()
@@ -179,6 +208,7 @@ impl History {
     }
 
     /// Search history by substring
+    #[allow(dead_code)] // Used in tests
     pub fn search(&self, query: &str) -> Vec<&HistoryEntry> {
         self.entries
             .iter()
@@ -187,6 +217,7 @@ impl History {
     }
 
     /// Get the last entry
+    #[allow(dead_code)] // Public API for history access
     pub fn last(&self) -> Option<&HistoryEntry> {
         self.entries.back()
     }
@@ -204,6 +235,9 @@ impl History {
             // Now write the complete entry to disk (append-only)
             if let Some(file_path) = &self.file_path {
                 if self.pending_entry {
+                    // M-07: Acquire lock via sidecar lock file
+                    let _lock_file = Self::acquire_lock(file_path)?;
+
                     let mut options = OpenOptions::new();
                     options.create(true).append(true);
 
@@ -220,6 +254,11 @@ impl History {
                     writeln!(file, "{}", json)
                         .with_context(|| "Failed to write history entry")?;
 
+                    // Ensure data is flushed before releasing lock
+                    file.flush()
+                        .with_context(|| "Failed to flush history entry")?;
+
+                    // Lock released when _lock_file is dropped
                     self.pending_entry = false;
                 }
             }
@@ -228,16 +267,19 @@ impl History {
     }
 
     /// Get total entry count
+    #[allow(dead_code)] // Public API
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Check if history is empty
+    #[allow(dead_code)] // Public API
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Clear history
+    #[allow(dead_code)] // Public API for history management
     pub fn clear(&mut self) -> Result<()> {
         self.entries.clear();
         if let Some(file_path) = &self.file_path {
@@ -250,11 +292,18 @@ impl History {
     }
 
     /// Compact history file (remove old entries and rewrite)
+    /// M-10 FIX: Skip pending entry to avoid duplicate writes
+    /// M-07 FIX: Use sidecar lock file to prevent concurrent compaction conflicts
     pub fn compact(&mut self) -> Result<()> {
         let file_path = match &self.file_path {
             Some(path) => path,
             None => return Ok(()), // Memory-only mode, nothing to compact
         };
+
+        // M-07: Acquire exclusive lock via sidecar lock file
+        // Using a sidecar file ensures all processes coordinate through the same
+        // persistent lock file even after rename operations
+        let _lock_file = Self::acquire_lock(file_path)?;
 
         let temp_path = file_path.with_extension("tmp");
 
@@ -270,15 +319,26 @@ impl History {
                 .open(&temp_path)
                 .with_context(|| format!("Failed to create temp history file: {:?}", temp_path))?;
 
-            for entry in &self.entries {
+            // M-10 FIX: If there's a pending entry (last one without exit code),
+            // skip it during compaction to avoid writing it twice
+            let entries_to_write = if self.pending_entry && !self.entries.is_empty() {
+                self.entries.len() - 1
+            } else {
+                self.entries.len()
+            };
+
+            for entry in self.entries.iter().take(entries_to_write) {
                 let json = serde_json::to_string(entry)?;
                 writeln!(file, "{}", json)?;
             }
+
+            file.flush()?;
         }
 
         fs::rename(&temp_path, file_path)
             .with_context(|| "Failed to rename temp history file")?;
 
+        // Lock released when _lock_file is dropped
         Ok(())
     }
 
