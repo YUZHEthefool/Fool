@@ -53,10 +53,10 @@ impl HistoryEntry {
 /// History manager
 pub struct History {
     entries: VecDeque<HistoryEntry>,
-    file_path: Option<PathBuf>,  // None = memory-only mode
+    file_path: Option<PathBuf>, // None = memory-only mode
     max_entries: usize,
-    entries_since_compact: usize,  // Track entries added since last compaction
-    pending_entry: bool,  // Track if last entry needs exit code update
+    entries_since_compact: usize, // Track entries added since last compaction
+    pending_entry: bool,          // Track if last entry needs exit code update
 }
 
 impl History {
@@ -81,7 +81,8 @@ impl History {
             .open(&lock_path)
             .with_context(|| format!("Failed to open lock file: {:?}", lock_path))?;
 
-        lock_file.lock_exclusive()
+        lock_file
+            .lock_exclusive()
             .with_context(|| format!("Failed to acquire lock: {:?}", lock_path))?;
 
         Ok(lock_file)
@@ -245,14 +246,13 @@ impl History {
                     #[cfg(unix)]
                     options.mode(0o600);
 
-                    let mut file = options
-                        .open(file_path)
-                        .with_context(|| format!("Failed to open history file for writing: {:?}", file_path))?;
+                    let mut file = options.open(file_path).with_context(|| {
+                        format!("Failed to open history file for writing: {:?}", file_path)
+                    })?;
 
                     let json = serde_json::to_string(&entry)
                         .with_context(|| "Failed to serialize history entry")?;
-                    writeln!(file, "{}", json)
-                        .with_context(|| "Failed to write history entry")?;
+                    writeln!(file, "{}", json).with_context(|| "Failed to write history entry")?;
 
                     // Ensure data is flushed before releasing lock
                     file.flush()
@@ -335,8 +335,7 @@ impl History {
             file.flush()?;
         }
 
-        fs::rename(&temp_path, file_path)
-            .with_context(|| "Failed to rename temp history file")?;
+        fs::rename(&temp_path, file_path).with_context(|| "Failed to rename temp history file")?;
 
         // Lock released when _lock_file is dropped
         Ok(())
@@ -411,9 +410,15 @@ mod tests {
         let path = dir.path().join("history");
         let mut history = History::new(path.to_string_lossy().to_string(), 100).unwrap();
 
-        history.add(HistoryEntry::new("git status".to_string())).unwrap();
-        history.add(HistoryEntry::new("git commit".to_string())).unwrap();
-        history.add(HistoryEntry::new("ls -la".to_string())).unwrap();
+        history
+            .add(HistoryEntry::new("git status".to_string()))
+            .unwrap();
+        history
+            .add(HistoryEntry::new("git commit".to_string()))
+            .unwrap();
+        history
+            .add(HistoryEntry::new("ls -la".to_string()))
+            .unwrap();
 
         let results = history.search("git");
         assert_eq!(results.len(), 2);

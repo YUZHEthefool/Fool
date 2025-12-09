@@ -247,8 +247,7 @@ impl Config {
             }
         }
 
-        let content = toml::to_string_pretty(self)
-            .with_context(|| "Failed to serialize config")?;
+        let content = toml::to_string_pretty(self).with_context(|| "Failed to serialize config")?;
 
         // Create file with restricted permissions (0o600 on Unix)
         let mut options = OpenOptions::new();

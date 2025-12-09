@@ -89,15 +89,13 @@ async fn execute_command(cmd: &str, config: Config) -> Result<i32> {
 
     let result = parser.parse(cmd);
     match result {
-        parser::ParseResult::Commands(commands) => {
-            match executor.execute_pipeline(commands) {
-                Ok(exec_result) => Ok(exec_result.exit_code),
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    Ok(1)
-                }
+        parser::ParseResult::Commands(commands) => match executor.execute_pipeline(commands) {
+            Ok(exec_result) => Ok(exec_result.exit_code),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                Ok(1)
             }
-        }
+        },
         parser::ParseResult::AIQuery(query) => {
             if query.is_empty() {
                 eprintln!("Usage: ! <your question>");

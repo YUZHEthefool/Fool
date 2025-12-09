@@ -129,42 +129,28 @@ impl Executor {
     }
 
     /// Execute a builtin command
-    fn execute_builtin(&mut self, builtin: BuiltinCommand, cmd: &Command) -> Result<ExecutionResult> {
+    fn execute_builtin(
+        &mut self,
+        builtin: BuiltinCommand,
+        cmd: &Command,
+    ) -> Result<ExecutionResult> {
         match builtin {
             BuiltinCommand::Cd => {
                 let path = cmd.args.first().map(|s| s.as_str()).unwrap_or("~");
                 self.builtin_cd(path)
             }
             BuiltinCommand::Exit => {
-                let code = cmd.args.first()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
+                let code = cmd.args.first().and_then(|s| s.parse().ok()).unwrap_or(0);
                 std::process::exit(code);
             }
-            BuiltinCommand::Export => {
-                self.builtin_export(&cmd.args)
-            }
-            BuiltinCommand::Unset => {
-                self.builtin_unset(&cmd.args)
-            }
-            BuiltinCommand::History => {
-                self.builtin_history(&cmd.args)
-            }
-            BuiltinCommand::Help => {
-                self.builtin_help()
-            }
-            BuiltinCommand::Clear => {
-                self.builtin_clear()
-            }
-            BuiltinCommand::Pwd => {
-                self.builtin_pwd()
-            }
-            BuiltinCommand::Alias => {
-                self.builtin_alias(&cmd.args)
-            }
-            BuiltinCommand::Source => {
-                self.builtin_source(&cmd.args)
-            }
+            BuiltinCommand::Export => self.builtin_export(&cmd.args),
+            BuiltinCommand::Unset => self.builtin_unset(&cmd.args),
+            BuiltinCommand::History => self.builtin_history(&cmd.args),
+            BuiltinCommand::Help => self.builtin_help(),
+            BuiltinCommand::Clear => self.builtin_clear(),
+            BuiltinCommand::Pwd => self.builtin_pwd(),
+            BuiltinCommand::Alias => self.builtin_alias(&cmd.args),
+            BuiltinCommand::Source => self.builtin_source(&cmd.args),
         }
     }
 
@@ -192,16 +178,19 @@ impl Executor {
 
         // Save current directory as OLDPWD
         if let Ok(cwd) = std::env::current_dir() {
-            self.env_vars.insert("OLDPWD".to_string(), cwd.to_string_lossy().to_string());
+            self.env_vars
+                .insert("OLDPWD".to_string(), cwd.to_string_lossy().to_string());
             std::env::set_var("OLDPWD", cwd);
         }
 
-        std::env::set_current_dir(&expanded_path)
-            .with_context(|| format!("cd: {}: No such file or directory", expanded_path.display()))?;
+        std::env::set_current_dir(&expanded_path).with_context(|| {
+            format!("cd: {}: No such file or directory", expanded_path.display())
+        })?;
 
         // Update PWD
         if let Ok(cwd) = std::env::current_dir() {
-            self.env_vars.insert("PWD".to_string(), cwd.to_string_lossy().to_string());
+            self.env_vars
+                .insert("PWD".to_string(), cwd.to_string_lossy().to_string());
             std::env::set_var("PWD", cwd);
         }
 
@@ -440,22 +429,26 @@ impl Executor {
             let is_last = i == commands.len() - 1;
 
             // Resolve alias - expand tokens
-            let (program, expanded_args) = if let Some(alias_tokens) = self.aliases.get(&cmd.program) {
-                // First token is the program, rest are prepended args
-                if alias_tokens.is_empty() {
-                    (cmd.program.clone(), cmd.args.clone())
+            let (program, expanded_args) =
+                if let Some(alias_tokens) = self.aliases.get(&cmd.program) {
+                    // First token is the program, rest are prepended args
+                    if alias_tokens.is_empty() {
+                        (cmd.program.clone(), cmd.args.clone())
+                    } else {
+                        let prog = alias_tokens[0].clone();
+                        let mut args = alias_tokens[1..].to_vec();
+                        args.extend(cmd.args.iter().cloned());
+                        (prog, args)
+                    }
                 } else {
-                    let prog = alias_tokens[0].clone();
-                    let mut args = alias_tokens[1..].to_vec();
-                    args.extend(cmd.args.iter().cloned());
-                    (prog, args)
-                }
-            } else {
-                (cmd.program.clone(), cmd.args.clone())
-            };
+                    (cmd.program.clone(), cmd.args.clone())
+                };
 
             // H-05: Warn about redirections on middle pipeline commands
-            if !is_first && !is_last && (cmd.stdin_redirect.is_some() || cmd.stdout_redirect.is_some()) {
+            if !is_first
+                && !is_last
+                && (cmd.stdin_redirect.is_some() || cmd.stdout_redirect.is_some())
+            {
                 eprintln!(
                     "Warning: redirections on middle pipeline command '{}' may not behave as expected",
                     program
@@ -502,7 +495,11 @@ impl Executor {
                     Ok(f) => f,
                     Err(e) => {
                         Self::cleanup_children(&mut children);
-                        return Err(anyhow!("Cannot open file for output: {}: {}", output_file, e));
+                        return Err(anyhow!(
+                            "Cannot open file for output: {}: {}",
+                            output_file,
+                            e
+                        ));
                     }
                 };
                 process.stdout(Stdio::from(file));
@@ -545,9 +542,7 @@ impl Executor {
             last_status = Some(child.wait()?);
         }
 
-        let exit_code = last_status
-            .and_then(|s| s.code())
-            .unwrap_or(1);
+        let exit_code = last_status.and_then(|s| s.code()).unwrap_or(1);
 
         self.last_exit_code = exit_code;
 
@@ -607,7 +602,9 @@ mod tests {
     #[test]
     fn test_export_and_get_env() {
         let mut executor = Executor::new();
-        executor.builtin_export(&["TEST_VAR=hello".to_string()]).unwrap();
+        executor
+            .builtin_export(&["TEST_VAR=hello".to_string()])
+            .unwrap();
         assert_eq!(executor.get_env("TEST_VAR"), Some(&"hello".to_string()));
     }
 
@@ -629,7 +626,9 @@ mod tests {
         let mut executor = Executor::new();
 
         // Test alias with quoted string
-        executor.builtin_alias(&["greet=echo 'hello world'".to_string()]).unwrap();
+        executor
+            .builtin_alias(&["greet=echo 'hello world'".to_string()])
+            .unwrap();
 
         let alias_tokens = executor.aliases.get("greet").unwrap();
         assert_eq!(alias_tokens.len(), 2);
@@ -654,18 +653,19 @@ mod tests {
         };
 
         // Get the alias
-        let (program, expanded_args) = if let Some(alias_tokens) = executor.aliases.get(&cmd.program) {
-            if alias_tokens.is_empty() {
-                (cmd.program.clone(), cmd.args.clone())
+        let (program, expanded_args) =
+            if let Some(alias_tokens) = executor.aliases.get(&cmd.program) {
+                if alias_tokens.is_empty() {
+                    (cmd.program.clone(), cmd.args.clone())
+                } else {
+                    let prog = alias_tokens[0].clone();
+                    let mut args = alias_tokens[1..].to_vec();
+                    args.extend(cmd.args.iter().cloned());
+                    (prog, args)
+                }
             } else {
-                let prog = alias_tokens[0].clone();
-                let mut args = alias_tokens[1..].to_vec();
-                args.extend(cmd.args.iter().cloned());
-                (prog, args)
-            }
-        } else {
-            (cmd.program.clone(), cmd.args.clone())
-        };
+                (cmd.program.clone(), cmd.args.clone())
+            };
 
         // Verify expansion
         assert_eq!(program, "ls");
@@ -763,7 +763,9 @@ mod tests {
         let result = executor.execute_external_pipeline(commands);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("Command not found") || err_msg.contains("nonexistent_command_12345"));
+        assert!(
+            err_msg.contains("Command not found") || err_msg.contains("nonexistent_command_12345")
+        );
     }
 
     #[test]
@@ -776,15 +778,13 @@ mod tests {
         let output_path = dir.path().join("single_out.txt");
 
         // Test: echo "hello world" > output.txt
-        let commands = vec![
-            Command {
-                program: "echo".to_string(),
-                args: vec!["hello world".to_string()],
-                stdin_redirect: None,
-                stdout_redirect: Some(output_path.to_string_lossy().to_string()),
-                stdout_append: false,
-            },
-        ];
+        let commands = vec![Command {
+            program: "echo".to_string(),
+            args: vec!["hello world".to_string()],
+            stdin_redirect: None,
+            stdout_redirect: Some(output_path.to_string_lossy().to_string()),
+            stdout_append: false,
+        }];
 
         let result = executor.execute_external_pipeline(commands).unwrap();
         assert_eq!(result.exit_code, 0);
@@ -803,27 +803,23 @@ mod tests {
         let output_path = dir.path().join("append_out.txt");
 
         // First write
-        let commands1 = vec![
-            Command {
-                program: "echo".to_string(),
-                args: vec!["line1".to_string()],
-                stdin_redirect: None,
-                stdout_redirect: Some(output_path.to_string_lossy().to_string()),
-                stdout_append: false,
-            },
-        ];
+        let commands1 = vec![Command {
+            program: "echo".to_string(),
+            args: vec!["line1".to_string()],
+            stdin_redirect: None,
+            stdout_redirect: Some(output_path.to_string_lossy().to_string()),
+            stdout_append: false,
+        }];
         executor.execute_external_pipeline(commands1).unwrap();
 
         // Append write
-        let commands2 = vec![
-            Command {
-                program: "echo".to_string(),
-                args: vec!["line2".to_string()],
-                stdin_redirect: None,
-                stdout_redirect: Some(output_path.to_string_lossy().to_string()),
-                stdout_append: true,
-            },
-        ];
+        let commands2 = vec![Command {
+            program: "echo".to_string(),
+            args: vec!["line2".to_string()],
+            stdin_redirect: None,
+            stdout_redirect: Some(output_path.to_string_lossy().to_string()),
+            stdout_append: true,
+        }];
         executor.execute_external_pipeline(commands2).unwrap();
 
         let output = fs::read_to_string(&output_path).unwrap();

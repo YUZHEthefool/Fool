@@ -4,12 +4,15 @@
 use crate::config::AiConfig;
 use crate::history::History;
 use anyhow::{anyhow, Context, Result};
+use crossterm::{
+    cursor, execute,
+    style::{Color, Print, ResetColor, SetForegroundColor},
+};
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::io::{stdout, Write};
 use std::time::Duration;
-use crossterm::{cursor, execute, style::{Color, Print, SetForegroundColor, ResetColor}};
 
 /// OpenAI chat message
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,13 +76,14 @@ impl AiAgent {
             Ok(client) => client,
             Err(e) => {
                 // M-05: Log the error instead of silently swallowing it
-                eprintln!("Warning: Failed to build HTTP client with custom settings: {}", e);
+                eprintln!(
+                    "Warning: Failed to build HTTP client with custom settings: {}",
+                    e
+                );
                 eprintln!("Warning: Using default client (timeouts may not be applied)");
 
                 // Try a simpler configuration
-                Client::builder()
-                    .build()
-                    .unwrap_or_else(|_| Client::new())
+                Client::builder().build().unwrap_or_else(|_| Client::new())
             }
         }
     }
@@ -145,7 +149,8 @@ impl AiAgent {
         )?;
         stdout().flush()?;
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
@@ -157,7 +162,11 @@ impl AiAgent {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("API request failed with status {}: {}", status, body));
+            return Err(anyhow!(
+                "API request failed with status {}: {}",
+                status,
+                body
+            ));
         }
 
         // Clear loading message
@@ -244,7 +253,9 @@ impl AiAgent {
     /// Send a query without streaming (for testing or simple use)
     #[allow(dead_code)] // Reserved for future non-streaming API usage
     pub async fn query(&self, query: &str, history: &History) -> Result<String> {
-        let api_key = self.config.get_api_key()
+        let api_key = self
+            .config
+            .get_api_key()
             .ok_or_else(|| anyhow!("API key not configured"))?;
 
         let messages = self.build_messages(query, history);
@@ -258,7 +269,8 @@ impl AiAgent {
 
         let url = format!("{}/chat/completions", self.config.api_base);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")

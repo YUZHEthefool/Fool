@@ -224,59 +224,55 @@ impl Parser {
                         state = ParserState::CommandStart;
                     }
                 }
-                ParserState::RedirectOut | ParserState::RedirectAppend => {
-                    match c {
-                        ' ' | '\t' => {
-                            if !current_token.is_empty() {
-                                current_command.stdout_redirect = Some(current_token.clone());
-                                current_command.stdout_append = state == ParserState::RedirectAppend;
-                                current_token.clear();
-                                state = ParserState::Argument;
-                            }
-                        }
-                        '\'' => {
-                            prev_state = state.clone();
-                            state = ParserState::SingleQuote;
-                        }
-                        '"' => {
-                            prev_state = state.clone();
-                            state = ParserState::DoubleQuote;
-                        }
-                        '\\' => {
-                            prev_state = state.clone();
-                            state = ParserState::Escape;
-                        }
-                        _ => {
-                            current_token.push(c);
+                ParserState::RedirectOut | ParserState::RedirectAppend => match c {
+                    ' ' | '\t' => {
+                        if !current_token.is_empty() {
+                            current_command.stdout_redirect = Some(current_token.clone());
+                            current_command.stdout_append = state == ParserState::RedirectAppend;
+                            current_token.clear();
+                            state = ParserState::Argument;
                         }
                     }
-                }
-                ParserState::RedirectIn => {
-                    match c {
-                        ' ' | '\t' => {
-                            if !current_token.is_empty() {
-                                current_command.stdin_redirect = Some(current_token.clone());
-                                current_token.clear();
-                                state = ParserState::Argument;
-                            }
-                        }
-                        '\'' => {
-                            prev_state = state.clone();
-                            state = ParserState::SingleQuote;
-                        }
-                        '"' => {
-                            prev_state = state.clone();
-                            state = ParserState::DoubleQuote;
-                        }
-                        '\\' => {
-                            prev_state = state.clone();
-                            state = ParserState::Escape;
-                        }
-                        _ => {
-                            current_token.push(c);
+                    '\'' => {
+                        prev_state = state.clone();
+                        state = ParserState::SingleQuote;
+                    }
+                    '"' => {
+                        prev_state = state.clone();
+                        state = ParserState::DoubleQuote;
+                    }
+                    '\\' => {
+                        prev_state = state.clone();
+                        state = ParserState::Escape;
+                    }
+                    _ => {
+                        current_token.push(c);
+                    }
+                },
+                ParserState::RedirectIn => match c {
+                    ' ' | '\t' => {
+                        if !current_token.is_empty() {
+                            current_command.stdin_redirect = Some(current_token.clone());
+                            current_token.clear();
+                            state = ParserState::Argument;
                         }
                     }
-                }
+                    '\'' => {
+                        prev_state = state.clone();
+                        state = ParserState::SingleQuote;
+                    }
+                    '"' => {
+                        prev_state = state.clone();
+                        state = ParserState::DoubleQuote;
+                    }
+                    '\\' => {
+                        prev_state = state.clone();
+                        state = ParserState::Escape;
+                    }
+                    _ => {
+                        current_token.push(c);
+                    }
+                },
                 ParserState::AIMode => {
                     // Should not reach here in normal parsing
                     unreachable!()
@@ -326,13 +322,19 @@ impl Parser {
         // Validate final state: check for incomplete pipelines or redirections
         match state {
             ParserState::Pipe => {
-                return ParseResult::Error("Syntax error: pipe without following command".to_string());
+                return ParseResult::Error(
+                    "Syntax error: pipe without following command".to_string(),
+                );
             }
             ParserState::RedirectOut | ParserState::RedirectAppend => {
-                return ParseResult::Error("Syntax error: output redirection without file".to_string());
+                return ParseResult::Error(
+                    "Syntax error: output redirection without file".to_string(),
+                );
             }
             ParserState::RedirectIn => {
-                return ParseResult::Error("Syntax error: input redirection without file".to_string());
+                return ParseResult::Error(
+                    "Syntax error: input redirection without file".to_string(),
+                );
             }
             _ => {}
         }
@@ -484,7 +486,10 @@ mod tests {
         match parser.parse("echo hi > \"build logs/output.txt\"") {
             ParseResult::Commands(cmds) => {
                 assert_eq!(cmds.len(), 1);
-                assert_eq!(cmds[0].stdout_redirect, Some("build logs/output.txt".to_string()));
+                assert_eq!(
+                    cmds[0].stdout_redirect,
+                    Some("build logs/output.txt".to_string())
+                );
             }
             _ => panic!("Expected Commands"),
         }
@@ -514,7 +519,11 @@ mod tests {
         // M-06: Trailing backslash should return an error
         match parser.parse("echo test\\") {
             ParseResult::Error(e) => {
-                assert!(e.contains("backslash"), "Expected backslash error, got: {}", e);
+                assert!(
+                    e.contains("backslash"),
+                    "Expected backslash error, got: {}",
+                    e
+                );
             }
             other => panic!("Expected Error for trailing backslash, got: {:?}", other),
         }
@@ -522,7 +531,11 @@ mod tests {
         // Single backslash should also be an error
         match parser.parse("\\") {
             ParseResult::Error(e) => {
-                assert!(e.contains("backslash"), "Expected backslash error, got: {}", e);
+                assert!(
+                    e.contains("backslash"),
+                    "Expected backslash error, got: {}",
+                    e
+                );
             }
             other => panic!("Expected Error for single backslash, got: {:?}", other),
         }
