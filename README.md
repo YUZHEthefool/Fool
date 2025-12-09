@@ -1,3 +1,38 @@
+<!-- DOWNLOAD_START -->
+## 📦 下载最新版本
+
+**当前版本**: [v1.0.0](https://github.com/YUZHEthefool/Fool/releases/tag/v1.0.0) (发布于 2025-12-09)
+
+### 快速下载
+
+| 平台 | 架构 | 下载 |
+|------|------|------|
+| 🐧 Linux | x86_64 | [⬇️ 下载](https://github.com/YUZHEthefool/Fool/releases/download/v1.0.0/fool-1.0.0-x86_64-unknown-linux-gnu.tar.gz) ([校验和](https://github.com/YUZHEthefool/Fool/releases/download/v1.0.0/fool-1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256)) |
+| 🍎 macOS | x86_64 (Intel) | [⬇️ 下载](https://github.com/YUZHEthefool/Fool/releases/download/v1.0.0/fool-1.0.0-x86_64-apple-darwin.tar.gz) ([校验和](https://github.com/YUZHEthefool/Fool/releases/download/v1.0.0/fool-1.0.0-x86_64-apple-darwin.tar.gz.sha256)) |
+| 🍎 macOS | aarch64 (M1/M2) | [⬇️ 下载](https://github.com/YUZHEthefool/Fool/releases/download/v1.0.0/fool-1.0.0-aarch64-apple-darwin.tar.gz) ([校验和](https://github.com/YUZHEthefool/Fool/releases/download/v1.0.0/fool-1.0.0-aarch64-apple-darwin.tar.gz.sha256)) |
+
+### 安装说明
+
+```bash
+# 解压下载的文件
+tar -xzf fool-1.0.0-<target>.tar.gz
+cd fool-1.0.0
+
+# 移动到系统路径（可选）
+sudo mv fool /usr/local/bin/
+
+# 验证安装
+fool --version
+```
+
+查看 [所有版本](https://github.com/YUZHEthefool/Fool/releases)
+<!-- DOWNLOAD_END -->
+
+<!-- CI_BADGE_START -->
+[![CI](https://github.com/YUZHEthefool/Fool/actions/workflows/ci.yml/badge.svg)](https://github.com/YUZHEthefool/Fool/actions/workflows/ci.yml)
+[![Release](https://github.com/YUZHEthefool/Fool/actions/workflows/release.yml/badge.svg)](https://github.com/YUZHEthefool/Fool/actions/workflows/release.yml)
+<!-- CI_BADGE_END -->
+
 # Fool Shell
 
 一款基于 Rust 编写的、状态机驱动的、原生集成 AI 智能辅助的现代化交互式 Shell。
